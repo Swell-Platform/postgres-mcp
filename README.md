@@ -226,6 +226,136 @@ Postgres MCP Pro supports multiple *access modes* to give you control over the o
 
 To use restricted mode, replace `--access-mode=unrestricted` with `--access-mode=restricted` in the configuration examples above.
 
+##### Result Redaction
+
+Postgres MCP Pro can redact protected table and column values before query results are returned to the agent.
+This is designed for cases such as HIPAA-sensitive datasets where the data may still participate in joins and aggregations, but selected result values should not be exposed.
+
+Supported configuration inputs:
+- `--redaction-policy-file` or `POSTGRES_MCP_REDACTION_POLICY_FILE`
+- `--redaction-detector` or `POSTGRES_MCP_REDACTION_DETECTOR`
+- `--redaction-fallback-mode` or `POSTGRES_MCP_REDACTION_FALLBACK_MODE`
+- `POSTGRES_MCP_REDACT_TABLES`
+- `POSTGRES_MCP_REDACT_COLUMNS`
+
+Currently supported redaction detectors:
+- `none`
+- `simple`
+- `presidio`
+
+Policy file example:
+
+```yaml
+protected_tables:
+  - public.patients
+
+protected_columns:
+  - public.encounters.patient_name
+  - public.patients.date_of_birth
+  - public.patients.phone
+
+column_rules:
+  - column: public.telephony_events.caller_number
+    skip_detector: true
+  - column: public.patients.phone
+    force_redact: true
+```
+
+The recommended production configuration is a YAML or JSON policy file referenced by `--redaction-policy-file` or `POSTGRES_MCP_REDACTION_POLICY_FILE`.
+
+For example, if you run Postgres MCP Pro directly:
+
+```bash
+postgres-mcp \
+  --access-mode=restricted \
+  --redaction-policy-file=/path/to/redaction-policy.yml \
+  --redaction-detector=simple \
+  --redaction-fallback-mode=best_effort
+```
+
+For smaller deployments, you can also configure protected tables and columns directly with environment variables:
+
+```bash
+export POSTGRES_MCP_REDACT_TABLES=public.patients
+export POSTGRES_MCP_REDACT_COLUMNS=public.patients.first_name,public.patients.last_name,public.patients.phone
+```
+
+Policy files take precedence over inline environment variables for the same settings.
+
+If you choose `presidio`, install the optional dependency in the environment that runs Postgres MCP Pro:
+
+```bash
+pip install 'postgres-mcp[presidio]'
+```
+
+Presidio may also require additional NLP model dependencies depending on how you configure it in your environment.
+
+##### Docker
+
+If you run Postgres MCP Pro with Docker, the recommended pattern is to mount the policy file into the container and point `POSTGRES_MCP_REDACTION_POLICY_FILE` at it:
+
+```bash
+docker run -i --rm \
+  -e DATABASE_URI=postgresql://username:password@host:5432/app \
+  -e POSTGRES_MCP_REDACTION_POLICY_FILE=/config/redaction-policy.yml \
+  -e POSTGRES_MCP_REDACTION_DETECTOR=simple \
+  -e POSTGRES_MCP_REDACTION_FALLBACK_MODE=best_effort \
+  -v "$(pwd)/redaction-policy.yml:/config/redaction-policy.yml:ro" \
+  crystaldba/postgres-mcp --access-mode=restricted
+```
+
+The default Docker image does not include the optional Presidio dependency. To build an image with Presidio support enabled:
+
+```bash
+docker build --build-arg INSTALL_PRESIDIO=true -t postgres-mcp:presidio .
+```
+
+That Presidio-enabled image also installs the default spaCy model used by Presidio (`en_core_web_lg`), so it does not need to download models at container startup.
+
+Then run that image with `POSTGRES_MCP_REDACTION_DETECTOR=presidio`.
+
+##### Docker Compose
+
+For `docker-compose.yml`, use the same file-based configuration:
+
+```yaml
+services:
+  postgres-mcp:
+    image: crystaldba/postgres-mcp
+    environment:
+      DATABASE_URI: postgresql://username:password@db:5432/app
+      POSTGRES_MCP_REDACTION_POLICY_FILE: /config/redaction-policy.yml
+      POSTGRES_MCP_REDACTION_DETECTOR: simple
+      POSTGRES_MCP_REDACTION_FALLBACK_MODE: best_effort
+    volumes:
+      - ./redaction-policy.yml:/config/redaction-policy.yml:ro
+```
+
+To enable Presidio in a Compose-built image, add a build arg:
+
+```yaml
+services:
+  postgres-mcp:
+    build:
+      context: .
+      args:
+        INSTALL_PRESIDIO: "true"
+    environment:
+      POSTGRES_MCP_REDACTION_DETECTOR: presidio
+```
+
+For small Compose deployments, you can also use inline environment variables:
+
+```yaml
+services:
+  postgres-mcp:
+    image: crystaldba/postgres-mcp
+    environment:
+      DATABASE_URI: postgresql://username:password@db:5432/app
+      POSTGRES_MCP_REDACT_TABLES: public.patients
+      POSTGRES_MCP_REDACT_COLUMNS: public.patients.first_name,public.patients.last_name,public.patients.phone
+```
+
 
 #### Other MCP Clients
 

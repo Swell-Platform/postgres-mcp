@@ -12,6 +12,7 @@ dependencies = [
     "attrs>=25.4.0",
     "psycopg-pool>=3.3.0",
     "instructor>=1.14.4",
+    "pyyaml>=6.0.2",
 ]
 license = "mit"
 license-files = ["LICENSE"]
@@ -26,6 +27,11 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 postgres-mcp = "postgres_mcp:main"
+
+[project.optional-dependencies]
+presidio = [
+    "presidio-analyzer>=2.2.0",
+]
 
 # [tool.pyright]
 # venvPath = "."

@@ -27,6 +27,10 @@ from .explain import ExplainPlanTool
 from .index.index_opt_base import MAX_NUM_INDEX_TUNING_QUERIES
 from .index.llm_opt import LLMOptimizerTool
 from .index.presentation import TextPresentation
+from .redaction_policy import RedactionConfig
+from .redaction_policy import RedactionPolicy
+from .redaction_policy import load_redaction_config
+from .result_redactor import ResultRedactor
 from .sql import DbConnPool
 from .sql import SafeSqlDriver
 from .sql import SqlDriver
@@ -57,6 +61,8 @@ class AccessMode(str, Enum):
 db_connection = DbConnPool()
 current_access_mode = AccessMode.UNRESTRICTED
 shutdown_in_progress = False
+current_redaction_config = RedactionConfig(policy=RedactionPolicy())
+result_redactor: ResultRedactor | None = None
 
 
 async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
@@ -79,6 +85,10 @@ def format_text_response(text: Any) -> ResponseType:
 def format_error_response(error: str) -> ResponseType:
     """Format an error response."""
     return format_text_response(f"Error: {error}")
+
+
+def _is_column_protected(schema: str | None, table: str, column: str) -> bool:
+    return current_redaction_config.policy.is_column_protected(schema, table, column)
 
 
 @mcp.tool(
@@ -222,6 +232,7 @@ async def get_object_details(
                         "data_type": r.cells["data_type"],
                         "is_nullable": r.cells["is_nullable"],
                         "default": r.cells["column_default"],
+                        "protected": _is_column_protected(schema_name, object_name, r.cells["column_name"]),
                     }
                     for r in col_rows
                 ]
@@ -421,6 +432,8 @@ async def execute_sql(
         rows = await sql_driver.execute_query(sql)  # type: ignore
         if rows is None:
             return format_text_response("No results")
+        if result_redactor is not None:
+            rows = await result_redactor.redact_rows(sql, rows)
         return format_text_response(list([r.cells for r in rows]))
     except Exception as e:
         logger.error(f"Error executing query: {e}")
@@ -596,12 +609,47 @@ async def main():
         default=8000,
         help="Port for streamable HTTP server (default: 8000)",
     )
+    parser.add_argument(
+        "--redaction-policy-file",
+        type=str,
+        default=None,
+        help="Optional YAML or JSON file describing protected tables and columns for result redaction",
+    )
+    parser.add_argument(
+        "--redaction-detector",
+        type=str,
+        default=None,
+        help="Optional fallback detector for unresolved values. Supported values: none, simple, presidio",
+    )
+    parser.add_argument(
+        "--redaction-fallback-mode",
+        type=str,
+        default=None,
+        help="Fallback behavior when result provenance is unresolved. Supported values: best_effort",
+    )
 
     args = parser.parse_args()
 
     # Store the access mode in the global variable
     global current_access_mode
     current_access_mode = AccessMode(args.access_mode)
+
+    global current_redaction_config
+    global result_redactor
+    current_redaction_config = load_redaction_config(args)
+    result_redactor = None
+    if current_redaction_config.policy.is_enabled():
+        logger.info(
+            "Redaction enabled with policy_file=%s detector=%s fallback_mode=%s protected_tables=%s protected_columns=%s column_rules=%s",
+            current_redaction_config.settings.policy_file if current_redaction_config.settings else None,
+            current_redaction_config.policy.detector,
+            current_redaction_config.policy.fallback_mode,
+            len(current_redaction_config.policy.protected_tables),
+            len(current_redaction_config.policy.protected_columns),
+            len(current_redaction_config.policy.column_rules),
+        )
+    else:
+        logger.info("Redaction disabled")
 
     # Add the query tool with a description and annotations appropriate to the access mode
     if current_access_mode == AccessMode.UNRESTRICTED:
@@ -637,6 +685,8 @@ async def main():
     try:
         await db_connection.pool_connect(database_url)
         logger.info("Successfully connected to database and initialized connection pool")
+        if current_redaction_config.policy.is_enabled():
+            result_redactor = ResultRedactor(SqlDriver(conn=db_connection), current_redaction_config.policy)
     except Exception as e:
         logger.warning(
             f"Could not connect to database: {obfuscate_password(str(e))}",
@@ -644,6 +694,8 @@ async def main():
         logger.warning(
             "The MCP server will start but database operations will fail until a valid connection is established.",
         )
+        if current_redaction_config.policy.is_enabled():
+            result_redactor = ResultRedactor(SqlDriver(conn=db_connection), current_redaction_config.policy)
 
     # Set up proper shutdown handling
     try:
