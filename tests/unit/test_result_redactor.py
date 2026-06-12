@@ -118,6 +118,18 @@ async def test_redacts_schema_qualified_policy_for_unqualified_star_query():
 
 
 @pytest.mark.asyncio
+async def test_redacts_protected_columns_inside_computed_expressions():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.patients.email"]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"lowered": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT lower(p.email) AS lowered FROM public.patients p", rows)
+
+    assert result[0].cells["lowered"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
 async def test_protected_join_columns_can_be_used_without_redacting_safe_output():
     driver = make_driver(
         {
@@ -177,6 +189,18 @@ async def test_detector_fallback_only_runs_for_unresolved_provenance():
 
     assert unresolved_result[0].cells["contact"] == "[REDACTED]"
     assert known_result[0].cells["caller_number"] == "303-555-0100"
+
+
+@pytest.mark.asyncio
+async def test_unknown_provenance_redacts_when_detector_is_disabled():
+    driver = make_driver({})
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.patients.email"]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"masked": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT lower(email) FROM (SELECT email FROM public.patients) p", rows)
+
+    assert result[0].cells["masked"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio

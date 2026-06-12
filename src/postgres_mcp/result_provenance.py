@@ -173,9 +173,11 @@ class ResultProvenanceResolver:
         return set(), True
 
     def _iter_node_values(self, node: Node) -> list[Any]:
-        slot_map = getattr(node, "__slots__", {})
-        if isinstance(slot_map, dict):
-            return [getattr(node, attr_name) for attr_name in slot_map]
+        slot_names = getattr(node, "__slots__", ())
+        if isinstance(slot_names, dict):
+            return [getattr(node, attr_name) for attr_name in slot_names]
+        if isinstance(slot_names, (list, tuple, set)):
+            return [getattr(node, attr_name) for attr_name in slot_names]
         if hasattr(node, "__dict__"):
             return list(vars(node).values())
         return []

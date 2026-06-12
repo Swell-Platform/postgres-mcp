@@ -143,6 +143,8 @@ class ResultRedactor:
             return RedactionDecision(redact=False)
 
         if self.policy.fallback_mode == "best_effort":
+            if self.detector is None and self.policy.is_enabled():
+                return RedactionDecision(redact=True)
             return self._detector_decision(value)
 
         return RedactionDecision(redact=False)
