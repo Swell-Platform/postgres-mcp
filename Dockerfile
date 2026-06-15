@@ -2,6 +2,7 @@
 # See `Dockerfile` for details.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+ARG INSTALL_PRESIDIO=false
 
 # Disable Python downloads, because we want to use the system interpreter
 # across both images. If using a managed Python version, it needs to be
@@ -20,6 +21,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ADD . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
   uv sync --frozen --no-dev
+RUN if [ "$INSTALL_PRESIDIO" = "true" ]; then \
+      uv pip install --python /app/.venv/bin/python presidio-analyzer && \
+      /app/.venv/bin/python -m spacy download en_core_web_lg; \
+    fi
 
 
 FROM python:3.12-slim-bookworm
@@ -33,6 +38,7 @@ COPY --from=builder --chown=app:app /app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+ARG INSTALL_PRESIDIO=false
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 LABEL org.opencontainers.image.description="Postgres MCP Agent - Multi-architecture container (${TARGETPLATFORM})"

@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -112,3 +113,27 @@ async def test_command_line_parsing():
         # Restore original values
         sys.argv = original_argv
         asyncio.run = original_run
+
+
+@pytest.mark.asyncio
+async def test_main_fails_fast_on_invalid_redaction_policy(tmp_path: Path):
+    import sys
+
+    from postgres_mcp.server import main
+
+    policy_path = tmp_path / "invalid-redaction.yml"
+    policy_path.write_text("protected_columns: invalid")
+
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            f"--redaction-policy-file={policy_path}",
+        ]
+
+        with pytest.raises(ValueError, match="Invalid column identifier"):
+            await main()
+    finally:
+        sys.argv = original_argv
