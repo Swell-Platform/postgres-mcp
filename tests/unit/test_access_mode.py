@@ -41,7 +41,7 @@ async def test_get_sql_driver_returns_correct_driver(access_mode, expected_drive
         # When in RESTRICTED mode, verify timeout is set
         if access_mode == AccessMode.RESTRICTED:
             assert isinstance(driver, SafeSqlDriver)
-            assert driver.timeout == 30
+            assert driver.timeout == 30.0
 
 
 @pytest.mark.asyncio
@@ -53,8 +53,21 @@ async def test_get_sql_driver_sets_timeout_in_restricted_mode(mock_db_connection
     ):
         driver = await get_sql_driver()
         assert isinstance(driver, SafeSqlDriver)
-        assert driver.timeout == 30
+        assert driver.timeout == 30.0
         assert hasattr(driver, "sql_driver")
+
+
+@pytest.mark.asyncio
+async def test_get_sql_driver_uses_configured_timeout_in_restricted_mode(mock_db_connection):
+    """Test that get_sql_driver uses the configured timeout in restricted mode."""
+    with (
+        patch("postgres_mcp.server.current_access_mode", AccessMode.RESTRICTED),
+        patch("postgres_mcp.server.current_restricted_query_timeout_seconds", 75.0),
+        patch("postgres_mcp.server.db_connection", mock_db_connection),
+    ):
+        driver = await get_sql_driver()
+        assert isinstance(driver, SafeSqlDriver)
+        assert driver.timeout == 75.0
 
 
 @pytest.mark.asyncio
@@ -113,6 +126,123 @@ async def test_command_line_parsing():
         # Restore original values
         sys.argv = original_argv
         asyncio.run = original_run
+
+
+@pytest.mark.asyncio
+async def test_command_line_parsing_sets_restricted_query_timeout():
+    """Test that command-line arguments correctly set the restricted query timeout."""
+    import sys
+
+    from postgres_mcp.server import main
+
+    original_argv = sys.argv
+    original_run = asyncio.run
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            "--access-mode=restricted",
+            "--restricted-query-timeout-seconds=75",
+        ]
+        asyncio.run = AsyncMock()
+
+        with (
+            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
+            patch("postgres_mcp.server.mcp.run_stdio_async", AsyncMock()),
+            patch("postgres_mcp.server.shutdown", AsyncMock()),
+        ):
+            import postgres_mcp.server
+
+            postgres_mcp.server.current_restricted_query_timeout_seconds = 30.0
+
+            try:
+                await main()
+            except Exception:
+                pass
+
+            assert postgres_mcp.server.current_restricted_query_timeout_seconds == 75.0
+
+    finally:
+        sys.argv = original_argv
+        asyncio.run = original_run
+
+
+@pytest.mark.asyncio
+async def test_env_var_sets_restricted_query_timeout(monkeypatch):
+    import sys
+
+    from postgres_mcp.server import main
+
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            "--access-mode=restricted",
+        ]
+        monkeypatch.setenv("POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS", "45")
+
+        with (
+            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
+            patch("postgres_mcp.server.mcp.run_stdio_async", AsyncMock()),
+            patch("postgres_mcp.server.shutdown", AsyncMock()),
+        ):
+            import postgres_mcp.server
+
+            postgres_mcp.server.current_restricted_query_timeout_seconds = 30.0
+
+            try:
+                await main()
+            except Exception:
+                pass
+
+            assert postgres_mcp.server.current_restricted_query_timeout_seconds == 45.0
+    finally:
+        sys.argv = original_argv
+
+
+@pytest.mark.asyncio
+async def test_main_fails_fast_on_invalid_restricted_timeout():
+    import sys
+
+    from postgres_mcp.server import main
+
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            "--restricted-query-timeout-seconds=0",
+        ]
+
+        with pytest.raises(ValueError, match="Restricted query timeout must be greater than 0"):
+            await main()
+    finally:
+        sys.argv = original_argv
+
+
+@pytest.mark.asyncio
+async def test_main_fails_fast_on_nan_restricted_timeout():
+    import sys
+
+    from postgres_mcp.server import main
+
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            "--restricted-query-timeout-seconds=nan",
+        ]
+
+        with pytest.raises(ValueError, match="Restricted query timeout must be a finite number greater than 0"):
+            await main()
+    finally:
+        sys.argv = original_argv
 
 
 @pytest.mark.asyncio

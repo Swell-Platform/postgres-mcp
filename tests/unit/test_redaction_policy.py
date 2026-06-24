@@ -92,3 +92,39 @@ def test_load_redaction_config_accepts_presidio_detector():
 
     assert config.settings is not None
     assert config.settings.detector == "presidio"
+
+
+def test_load_redaction_config_accepts_partial_masking_style(tmp_path: Path):
+    policy_path = tmp_path / "redaction-policy.yml"
+    policy_path.write_text(
+        """
+column_rules:
+  - column: public.patients.email
+    masking_style: partial
+        """.strip()
+    )
+
+    config = load_redaction_config(
+        make_args(redaction_policy_file=str(policy_path)),
+        {},
+    )
+
+    assert len(config.policy.column_rules) == 1
+    assert config.policy.column_rules[0].masking_style == "partial"
+
+
+def test_load_redaction_config_rejects_unsupported_masking_style(tmp_path: Path):
+    policy_path = tmp_path / "redaction-policy.yml"
+    policy_path.write_text(
+        """
+column_rules:
+  - column: public.patients.email
+    masking_style: pseudonymize
+        """.strip()
+    )
+
+    with pytest.raises(ValueError, match="Unsupported masking style"):
+        load_redaction_config(
+            make_args(redaction_policy_file=str(policy_path)),
+            {},
+        )
