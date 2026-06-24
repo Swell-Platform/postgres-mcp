@@ -12,6 +12,7 @@ import yaml
 REDACTION_PLACEHOLDER = "[REDACTED]"
 SUPPORTED_DETECTORS = {"none", "simple", "presidio"}
 SUPPORTED_FALLBACK_MODES = {"best_effort"}
+SUPPORTED_MASKING_STYLES = {"full", "partial"}
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class QualifiedColumn:
 @dataclass(frozen=True)
 class ColumnRule:
     column: QualifiedColumn
+    masking_style: str | None = None
     force_redact: bool = False
     skip_detector: bool = False
 
@@ -119,9 +121,17 @@ class RedactionPolicy:
                 raise ValueError("Each column rule must be a mapping")
             if "column" not in raw_rule:
                 raise ValueError("Column rules must include a 'column' field")
+            masking_style = None
+            if "masking_style" in raw_rule:
+                masking_style = normalize_identifier(str(raw_rule["masking_style"]))
+            if bool(raw_rule.get("force_redact", False)):
+                masking_style = "full"
+            if masking_style is not None and masking_style not in SUPPORTED_MASKING_STYLES:
+                raise ValueError(f"Unsupported masking style: {masking_style}")
             column_rules.append(
                 ColumnRule(
                     column=QualifiedColumn.parse(str(raw_rule["column"])),
+                    masking_style=masking_style,
                     force_redact=bool(raw_rule.get("force_redact", False)),
                     skip_detector=bool(raw_rule.get("skip_detector", False)),
                 )

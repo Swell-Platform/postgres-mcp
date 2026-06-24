@@ -226,10 +226,15 @@ Postgres MCP Pro supports multiple *access modes* to give you control over the o
 
 To use restricted mode, replace `--access-mode=unrestricted` with `--access-mode=restricted` in the configuration examples above.
 
+Restricted mode query execution timeout defaults to 30 seconds. You can override it with:
+- `--restricted-query-timeout-seconds`
+- `POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS`
+
 ##### Result Redaction
 
 Postgres MCP Pro can redact protected table and column values before query results are returned to the agent.
 This is designed for cases such as HIPAA-sensitive datasets where the data may still participate in joins and aggregations, but selected result values should not be exposed.
+Results stay masked by default, and columns configured for partial masking can be explicitly revealed per query when the user asks for the real value.
 
 Supported configuration inputs:
 - `--redaction-policy-file` or `POSTGRES_MCP_REDACTION_POLICY_FILE`
@@ -251,15 +256,64 @@ protected_tables:
 
 protected_columns:
   - public.encounters.patient_name
-  - public.patients.date_of_birth
-  - public.patients.phone
+  - public.billing_cards.card_number
 
 column_rules:
   - column: public.telephony_events.caller_number
     skip_detector: true
-  - column: public.patients.phone
+  - column: public.encounters.patient_phone
+    masking_style: partial
+  - column: public.patients.ssn
     force_redact: true
 ```
+
+How the three rule types relate:
+- `protected_tables` fully redacts every column from the listed tables
+- `protected_columns` fully redacts only the listed columns
+- `column_rules` applies extra per-column behavior and does not require the column to also appear in `protected_tables` or `protected_columns`
+
+You do not need all three:
+- use `protected_tables` when a whole table should always be fully redacted
+- use `protected_columns` when only specific columns should always be fully redacted
+- use `column_rules` when a specific column needs partial masking or detector-related behavior
+
+Decision precedence:
+- `column_rules[].masking_style: full` wins first
+- then `protected_tables` and `protected_columns` apply full redaction
+- then `column_rules[].masking_style: partial` applies partial masking
+- if provenance is unresolved, detector fallback may still fully redact the value
+
+Masking styles supported in `column_rules`:
+- `full`: replace the value with the configured redaction placeholder and never reveal it
+- `partial`: return a masked version of the value by default and allow explicit reveal for that result column
+
+Current partial masking behavior:
+- emails reveal the first character of the local part and keep the full domain visible
+- phone numbers and SSNs reveal only the last 4 digits
+- dates reveal only the year
+- general text reveals the first character of each word and masks the rest of each word
+- `NULL` values are left unchanged
+
+Backward-compatibility rules:
+- `protected_tables` and `protected_columns` always use full redaction
+- existing `column_rules` that only use `skip_detector` keep their current behavior unless you add `masking_style`
+- `column_rules[].force_redact: true` is treated as full redaction
+- detector-based fallback matches are fully redacted and are not revealable
+
+What the legacy `column_rules` flags mean:
+- `force_redact: true` is the older way to say `masking_style: full`; prefer `masking_style` in new policies
+- `skip_detector: true` only affects unresolved provenance and tells the fallback detector not to heuristically redact that specific column
+
+When to use `skip_detector`:
+- use it when a column frequently looks like PII by pattern but you do not want detector fallback to redact it when provenance cannot be resolved
+- it does not override `protected_tables`, `protected_columns`, or `masking_style: full`
+
+Example partial reveal flow with `execute_sql`:
+- default query: `execute_sql(sql="SELECT email FROM public.patients")`
+- explicit reveal after the user asks for unmasked sensitive values:
+  `execute_sql(sql="SELECT email FROM public.patients", reveal_columns=["email"], reveal_confirmation="EXPLICIT_USER_REQUESTED_UNMASKED_DATA")`
+
+`reveal_columns` is ignored unless `reveal_confirmation` is also set to `EXPLICIT_USER_REQUESTED_UNMASKED_DATA`. This is intentional friction so ordinary requests like "include email and phone" do not automatically unmask sensitive values. Even with confirmation, `reveal_columns` only applies to result columns configured for partial masking. Fully redacted fields remain hidden.
 
 The recommended production configuration is a YAML or JSON policy file referenced by `--redaction-policy-file` or `POSTGRES_MCP_REDACTION_POLICY_FILE`.
 
@@ -268,6 +322,7 @@ For example, if you run Postgres MCP Pro directly:
 ```bash
 postgres-mcp \
   --access-mode=restricted \
+  --restricted-query-timeout-seconds=75 \
   --redaction-policy-file=/path/to/redaction-policy.yml \
   --redaction-detector=simple \
   --redaction-fallback-mode=best_effort
@@ -297,6 +352,7 @@ If you run Postgres MCP Pro with Docker, the recommended pattern is to mount the
 ```bash
 docker run -i --rm \
   -e DATABASE_URI=postgresql://username:password@host:5432/app \
+  -e POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS=75 \
   -e POSTGRES_MCP_REDACTION_POLICY_FILE=/config/redaction-policy.yml \
   -e POSTGRES_MCP_REDACTION_DETECTOR=simple \
   -e POSTGRES_MCP_REDACTION_FALLBACK_MODE=best_effort \
@@ -324,6 +380,7 @@ services:
     image: crystaldba/postgres-mcp
     environment:
       DATABASE_URI: postgresql://username:password@db:5432/app
+      POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS: 75
       POSTGRES_MCP_REDACTION_POLICY_FILE: /config/redaction-policy.yml
       POSTGRES_MCP_REDACTION_DETECTOR: simple
       POSTGRES_MCP_REDACTION_FALLBACK_MODE: best_effort

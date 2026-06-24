@@ -23,7 +23,43 @@ async def test_execute_sql_applies_result_redaction():
         result = await server.execute_sql("SELECT email FROM public.patients")
 
     assert "[REDACTED]" in result[0].text
-    redactor.redact_rows.assert_awaited_once()
+    redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", mock_driver.execute_query.return_value, reveal_columns=set())
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_forwards_reveal_columns():
+    mock_driver = MagicMock(spec=SqlDriver)
+    rows = [SqlDriver.RowResult(cells={"email": "a****@example.com"})]
+    mock_driver.execute_query = AsyncMock(return_value=rows)
+
+    redactor = MagicMock(spec=ResultRedactor)
+    redactor.redact_rows = AsyncMock(return_value=[SqlDriver.RowResult(cells={"email": "alice@example.com"})])
+
+    with patch.object(server, "result_redactor", redactor), patch.object(server, "get_sql_driver", AsyncMock(return_value=mock_driver)):
+        result = await server.execute_sql(
+            "SELECT email FROM public.patients",
+            reveal_columns=["email"],
+            reveal_confirmation="EXPLICIT_USER_REQUESTED_UNMASKED_DATA",
+        )
+
+    assert "alice@example.com" in result[0].text
+    redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", rows, reveal_columns={"email"})
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_does_not_reveal_without_confirmation():
+    mock_driver = MagicMock(spec=SqlDriver)
+    rows = [SqlDriver.RowResult(cells={"email": "a****@example.com"})]
+    mock_driver.execute_query = AsyncMock(return_value=rows)
+
+    redactor = MagicMock(spec=ResultRedactor)
+    redactor.redact_rows = AsyncMock(return_value=rows)
+
+    with patch.object(server, "result_redactor", redactor), patch.object(server, "get_sql_driver", AsyncMock(return_value=mock_driver)):
+        result = await server.execute_sql("SELECT email FROM public.patients", reveal_columns=["email"])
+
+    assert "a****@example.com" in result[0].text
+    redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", rows, reveal_columns=set())
 
 
 @pytest.mark.asyncio

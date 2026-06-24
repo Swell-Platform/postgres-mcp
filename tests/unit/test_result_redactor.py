@@ -73,15 +73,27 @@ async def test_redacts_aliased_protected_columns():
 
 
 @pytest.mark.asyncio
-async def test_redacts_only_protected_fields_for_star_queries():
-    driver = make_driver({("public", "patients"): ["id", "email", "name"]})
-    policy = RedactionPolicy.from_dict({"protected_columns": ["public.patients.email"]})
+async def test_masks_partial_columns():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
     redactor = ResultRedactor(driver, policy)
 
-    rows = [SqlDriver.RowResult(cells={"id": 1, "email": "alice@example.com", "name": "Alice"})]
-    result = await redactor.redact_rows("SELECT p.* FROM public.patients p", rows)
+    rows = [SqlDriver.RowResult(cells={"email": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT email FROM public.patients", rows)
 
-    assert result[0].cells == {"id": 1, "email": "[REDACTED]", "name": "Alice"}
+    assert result[0].cells["email"] == "a****@example.com"
+
+
+@pytest.mark.asyncio
+async def test_masks_partial_aliased_columns():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"contact": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT p.email AS contact FROM public.patients p", rows)
+
+    assert result[0].cells["contact"] == "a****@example.com"
 
 
 @pytest.mark.asyncio
@@ -102,7 +114,7 @@ async def test_redacts_schema_qualified_policy_for_unqualified_star_query():
     policy = RedactionPolicy.from_dict(
         {
             "protected_columns": ["public.contacts.email"],
-            "column_rules": [{"column": "public.contacts.phone_number", "force_redact": True}],
+            "column_rules": [{"column": "public.contacts.phone_number", "masking_style": "partial"}],
         }
     )
     redactor = ResultRedactor(driver, policy)
@@ -114,7 +126,7 @@ async def test_redacts_schema_qualified_policy_for_unqualified_star_query():
     ]
     result = await redactor.redact_rows("SELECT * FROM contacts", rows)
 
-    assert result[0].cells == {"id": 1, "email": "[REDACTED]", "phone_number": "[REDACTED]"}
+    assert result[0].cells == {"id": 1, "email": "[REDACTED]", "phone_number": "***-***-0101"}
 
 
 @pytest.mark.asyncio
@@ -127,6 +139,87 @@ async def test_redacts_protected_columns_inside_computed_expressions():
     result = await redactor.redact_rows("SELECT lower(p.email) AS lowered FROM public.patients p", rows)
 
     assert result[0].cells["lowered"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_masks_partial_columns_inside_computed_expressions():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"lowered": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT lower(p.email) AS lowered FROM public.patients p", rows)
+
+    assert result[0].cells["lowered"] == "a****@example.com"
+
+
+@pytest.mark.asyncio
+async def test_masks_general_text_by_word():
+    driver = make_driver({("public", "patients"): ["notes"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.notes", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"notes": "Alice Smith 123 Main"})]
+    result = await redactor.redact_rows("SELECT notes FROM public.patients", rows)
+
+    assert result[0].cells["notes"] == "A**** S**** 1** M***"
+
+
+@pytest.mark.asyncio
+async def test_masks_dates_by_revealing_only_year():
+    driver = make_driver({("public", "patients"): ["date_of_birth", "start_date"]})
+    policy = RedactionPolicy.from_dict(
+        {
+            "column_rules": [
+                {"column": "public.patients.date_of_birth", "masking_style": "partial"},
+                {"column": "public.patients.start_date", "masking_style": "partial"},
+            ]
+        }
+    )
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"date_of_birth": "1985-07-14", "start_date": "07/14/1985"})]
+    result = await redactor.redact_rows("SELECT date_of_birth, start_date FROM public.patients", rows)
+
+    assert result[0].cells["date_of_birth"] == "1985-**-**"
+    assert result[0].cells["start_date"] == "**/**/1985"
+
+
+@pytest.mark.asyncio
+async def test_partial_masking_leaves_null_values_unchanged():
+    driver = make_driver({("public", "patients"): ["date_of_birth"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.date_of_birth", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"date_of_birth": None})]
+    result = await redactor.redact_rows("SELECT date_of_birth FROM public.patients", rows)
+
+    assert result[0].cells["date_of_birth"] is None
+
+
+@pytest.mark.asyncio
+async def test_full_masking_wins_for_mixed_source_expressions():
+    driver = make_driver(
+        {
+            ("public", "patients"): ["email"],
+            ("public", "contacts"): ["email"],
+        }
+    )
+    policy = RedactionPolicy.from_dict(
+        {
+            "protected_columns": ["public.contacts.email"],
+            "column_rules": [{"column": "public.patients.email", "masking_style": "partial"}],
+        }
+    )
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"coalesced": "alice@example.com"})]
+    result = await redactor.redact_rows(
+        "SELECT coalesce(p.email, c.email) AS coalesced FROM public.patients p JOIN public.contacts c ON c.email = p.email",
+        rows,
+    )
+
+    assert result[0].cells["coalesced"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio
@@ -230,6 +323,84 @@ async def test_column_rules_can_force_redaction_for_specific_phone_columns():
 
     assert patient_result[0].cells["phone"] == "[REDACTED]"
     assert caller_result[0].cells["caller_number"] == "303-555-0102"
+
+
+@pytest.mark.asyncio
+async def test_reveal_columns_unmasks_partial_columns():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"email": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT email FROM public.patients", rows, reveal_columns={"email"})
+
+    assert result[0].cells["email"] == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_reveal_columns_unmasks_partial_aliased_columns():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"contact": "alice@example.com"})]
+    result = await redactor.redact_rows(
+        "SELECT p.email AS contact FROM public.patients p",
+        rows,
+        reveal_columns={"contact"},
+    )
+
+    assert result[0].cells["contact"] == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_reveal_columns_cannot_unmask_full_redaction():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.patients.email"]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"email": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT email FROM public.patients", rows, reveal_columns={"email"})
+
+    assert result[0].cells["email"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_reveal_columns_cannot_unmask_mixed_expression_with_full_source():
+    driver = make_driver(
+        {
+            ("public", "patients"): ["email"],
+            ("public", "contacts"): ["email"],
+        }
+    )
+    policy = RedactionPolicy.from_dict(
+        {
+            "protected_columns": ["public.contacts.email"],
+            "column_rules": [{"column": "public.patients.email", "masking_style": "partial"}],
+        }
+    )
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"coalesced": "alice@example.com"})]
+    result = await redactor.redact_rows(
+        "SELECT coalesce(p.email, c.email) AS coalesced FROM public.patients p JOIN public.contacts c ON c.email = p.email",
+        rows,
+        reveal_columns={"coalesced"},
+    )
+
+    assert result[0].cells["coalesced"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_reveal_columns_is_noop_for_unknown_columns():
+    driver = make_driver({("public", "patients"): ["email"]})
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(driver, policy)
+
+    rows = [SqlDriver.RowResult(cells={"email": "alice@example.com"})]
+    result = await redactor.redact_rows("SELECT email FROM public.patients", rows, reveal_columns={"missing"})
+
+    assert result[0].cells["email"] == "a****@example.com"
 
 
 def test_presidio_detector_requires_optional_dependency(monkeypatch):

@@ -63,6 +63,7 @@ current_access_mode = AccessMode.UNRESTRICTED
 shutdown_in_progress = False
 current_redaction_config = RedactionConfig(policy=RedactionPolicy())
 result_redactor: ResultRedactor | None = None
+current_restricted_query_timeout_seconds = 30.0
 
 
 async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
@@ -71,7 +72,7 @@ async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
 
     if current_access_mode == AccessMode.RESTRICTED:
         logger.debug("Using SafeSqlDriver with restrictions (RESTRICTED mode)")
-        return SafeSqlDriver(sql_driver=base_driver, timeout=30)  # 30 second timeout
+        return SafeSqlDriver(sql_driver=base_driver, timeout=current_restricted_query_timeout_seconds)
     else:
         logger.debug("Using unrestricted SqlDriver (UNRESTRICTED mode)")
         return base_driver
@@ -425,6 +426,21 @@ If there is no hypothetical index, you can pass an empty list.""",
 # Query function declaration without the decorator - we'll add it dynamically based on access mode
 async def execute_sql(
     sql: str = Field(description="SQL to run", default="all"),
+    reveal_columns: list[str] = Field(
+        description=(
+            "Optional result column names to reveal, but only when the user explicitly asks for unmasked sensitive values. "
+            "This alone is not enough; reveal_confirmation must also be provided. Only columns configured for partial masking "
+            "may be revealed, and fully redacted columns remain hidden."
+        ),
+        default=[],
+    ),
+    reveal_confirmation: str | None = Field(
+        description=(
+            "Required exact confirmation string to reveal masked data: EXPLICIT_USER_REQUESTED_UNMASKED_DATA. "
+            "Do not provide this unless the user clearly asked for unmasked sensitive values."
+        ),
+        default=None,
+    ),
 ) -> ResponseType:
     """Executes a SQL query against the database."""
     try:
@@ -433,7 +449,12 @@ async def execute_sql(
         if rows is None:
             return format_text_response("No results")
         if result_redactor is not None:
-            rows = await result_redactor.redact_rows(sql, rows)
+            requested_reveals = (
+                set(reveal_columns)
+                if reveal_confirmation == "EXPLICIT_USER_REQUESTED_UNMASKED_DATA"
+                else set()
+            )
+            rows = await result_redactor.redact_rows(sql, rows, reveal_columns=requested_reveals)
         return format_text_response(list([r.cells for r in rows]))
     except Exception as e:
         logger.error(f"Error executing query: {e}")
@@ -610,6 +631,12 @@ async def main():
         help="Port for streamable HTTP server (default: 8000)",
     )
     parser.add_argument(
+        "--restricted-query-timeout-seconds",
+        type=float,
+        default=None,
+        help="Timeout in seconds for restricted-mode SQL queries. Defaults to 30. Can also be set with POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS.",
+    )
+    parser.add_argument(
         "--redaction-policy-file",
         type=str,
         default=None,
@@ -633,6 +660,18 @@ async def main():
     # Store the access mode in the global variable
     global current_access_mode
     current_access_mode = AccessMode(args.access_mode)
+    global current_restricted_query_timeout_seconds
+    timeout_override = (
+        args.restricted_query_timeout_seconds
+        if args.restricted_query_timeout_seconds is not None
+        else os.environ.get("POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS")
+    )
+    if timeout_override is None:
+        current_restricted_query_timeout_seconds = 30.0
+    else:
+        current_restricted_query_timeout_seconds = float(timeout_override)
+        if current_restricted_query_timeout_seconds <= 0:
+            raise ValueError("Restricted query timeout must be greater than 0")
 
     global current_redaction_config
     global result_redactor
@@ -655,7 +694,12 @@ async def main():
     if current_access_mode == AccessMode.UNRESTRICTED:
         mcp.add_tool(
             execute_sql,
-            description="Execute any SQL query",
+            description=(
+                "Execute any SQL query. Results are masked by default when redaction is configured. "
+                "Only reveal masked data when the user explicitly asks for unmasked sensitive values, and only by supplying "
+                "both reveal_columns and reveal_confirmation=EXPLICIT_USER_REQUESTED_UNMASKED_DATA. Never expect fully "
+                "redacted fields to be revealable."
+            ),
             annotations=ToolAnnotations(
                 title="Execute SQL",
                 destructiveHint=True,
@@ -664,7 +708,12 @@ async def main():
     else:
         mcp.add_tool(
             execute_sql,
-            description="Execute a read-only SQL query",
+            description=(
+                "Execute a read-only SQL query. Results are masked by default when redaction is configured. "
+                "Only reveal masked data when the user explicitly asks for unmasked sensitive values, and only by supplying "
+                "both reveal_columns and reveal_confirmation=EXPLICIT_USER_REQUESTED_UNMASKED_DATA. Never expect fully "
+                "redacted fields to be revealable."
+            ),
             annotations=ToolAnnotations(
                 title="Execute SQL (Read-Only)",
                 readOnlyHint=True,
