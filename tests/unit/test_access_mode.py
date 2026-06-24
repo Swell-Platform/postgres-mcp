@@ -225,6 +225,27 @@ async def test_main_fails_fast_on_invalid_restricted_timeout():
 
 
 @pytest.mark.asyncio
+async def test_main_fails_fast_on_nan_restricted_timeout():
+    import sys
+
+    from postgres_mcp.server import main
+
+    original_argv = sys.argv
+
+    try:
+        sys.argv = [
+            "postgres_mcp",
+            "postgresql://user:password@localhost/db",
+            "--restricted-query-timeout-seconds=nan",
+        ]
+
+        with pytest.raises(ValueError, match="Restricted query timeout must be a finite number greater than 0"):
+            await main()
+    finally:
+        sys.argv = original_argv
+
+
+@pytest.mark.asyncio
 async def test_main_fails_fast_on_invalid_redaction_policy(tmp_path: Path):
     import sys
 

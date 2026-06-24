@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import logging
+import math
 import os
 import signal
 import sys
@@ -432,7 +433,7 @@ async def execute_sql(
             "This alone is not enough; reveal_confirmation must also be provided. Only columns configured for partial masking "
             "may be revealed, and fully redacted columns remain hidden."
         ),
-        default=[],
+        default_factory=list,
     ),
     reveal_confirmation: str | None = Field(
         description=(
@@ -670,8 +671,8 @@ async def main():
         current_restricted_query_timeout_seconds = 30.0
     else:
         current_restricted_query_timeout_seconds = float(timeout_override)
-        if current_restricted_query_timeout_seconds <= 0:
-            raise ValueError("Restricted query timeout must be greater than 0")
+        if not math.isfinite(current_restricted_query_timeout_seconds) or current_restricted_query_timeout_seconds <= 0:
+            raise ValueError("Restricted query timeout must be a finite number greater than 0")
 
     global current_redaction_config
     global result_redactor
