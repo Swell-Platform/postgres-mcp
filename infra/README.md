@@ -57,6 +57,9 @@ The publisher role's object access is limited to the image project's state,
 history, backups, and locks, plus read access to backend metadata. The central
 backend's existing cross-account bucket/KMS policies must permit this nonprod
 role; verify the first OIDC run rather than assuming local SSO proves CI access.
+Pulumi lock keys are `.pulumi/locks/organization/postgres-mcp-image/nonprod/*`;
+checkpoint/history keys omit the `organization` segment. Keep those IAM paths
+separate when changing backend permissions.
 
 The repository is beneath the existing `docker` Docker Hub pull-through-cache
 prefix. This change deliberately preserves its name and does not configure an

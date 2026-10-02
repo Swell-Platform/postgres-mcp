@@ -33,7 +33,7 @@ new aws.iam.RolePolicy("postgres-mcp-image-publisher", {
     Statement: [
       { Effect: "Allow", Action: "ecr:GetAuthorizationToken", Resource: "*" },
       { Effect: "Allow", Action: [
-        "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:BatchGetImage",
+        "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListTagsForResource", "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability",
         "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
       ], Resource: arn },
@@ -42,8 +42,12 @@ new aws.iam.RolePolicy("postgres-mcp-image-publisher", {
       { Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"],
         Resource: "arn:aws:s3:::swell-pulumi-state-195969062870/.pulumi/meta.yaml" },
       { Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject"],
-        Resource: ["stacks", "locks", "history", "backups"].map(directory =>
-          `arn:aws:s3:::swell-pulumi-state-195969062870/.pulumi/${directory}/postgres-mcp-image/*`) },
+        Resource: [
+          ...["stacks", "history", "backups"].map(directory =>
+            `arn:aws:s3:::swell-pulumi-state-195969062870/.pulumi/${directory}/postgres-mcp-image/*`),
+          // Lock keys include the DIY organization, unlike checkpoint/history keys.
+          "arn:aws:s3:::swell-pulumi-state-195969062870/.pulumi/locks/organization/postgres-mcp-image/nonprod/*",
+        ] },
       { Effect: "Allow", Action: ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"],
         Resource: "arn:aws:kms:us-west-2:195969062870:key/db6a398f-c0e3-4180-86c5-227ef790beb0" },
     ],
