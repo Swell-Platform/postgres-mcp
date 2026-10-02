@@ -186,3 +186,7 @@ devenv.local.nix
 
 # VS Code
 .vscode/settings.json
+
+# Pulumi dependencies and local state
+infra/node_modules/
+infra/**/.pulumi/

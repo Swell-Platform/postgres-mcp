@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from mcp.types import TextContent
 
 import postgres_mcp.server as server
 from postgres_mcp.redaction_policy import RedactionConfig
@@ -22,6 +23,7 @@ async def test_execute_sql_applies_result_redaction():
     with patch.object(server, "result_redactor", redactor), patch.object(server, "get_sql_driver", AsyncMock(return_value=mock_driver)):
         result = await server.execute_sql("SELECT email FROM public.patients")
 
+    assert isinstance(result[0], TextContent)
     assert "[REDACTED]" in result[0].text
     redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", mock_driver.execute_query.return_value, reveal_columns=set())
 
@@ -42,6 +44,7 @@ async def test_execute_sql_forwards_reveal_columns():
             reveal_confirmation="EXPLICIT_USER_REQUESTED_UNMASKED_DATA",
         )
 
+    assert isinstance(result[0], TextContent)
     assert "alice@example.com" in result[0].text
     redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", rows, reveal_columns={"email"})
 
@@ -58,6 +61,7 @@ async def test_execute_sql_does_not_reveal_without_confirmation():
     with patch.object(server, "result_redactor", redactor), patch.object(server, "get_sql_driver", AsyncMock(return_value=mock_driver)):
         result = await server.execute_sql("SELECT email FROM public.patients", reveal_columns=["email"])
 
+    assert isinstance(result[0], TextContent)
     assert "a****@example.com" in result[0].text
     redactor.redact_rows.assert_awaited_once_with("SELECT email FROM public.patients", rows, reveal_columns=set())
 

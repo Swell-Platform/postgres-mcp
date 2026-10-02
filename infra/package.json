@@ -1,0 +1,11 @@
+{
+  "name": "postgres-mcp-infra",
+  "private": true,
+  "scripts": {"check": "tsc --noEmit"},
+  "dependencies": {
+    "@pulumi/aws": "6.83.4",
+    "@pulumi/docker-build": "0.0.22",
+    "@pulumi/pulumi": "3.258.0"
+  },
+  "devDependencies": {"@types/node": "22.10.2", "typescript": "5.7.3"}
+}

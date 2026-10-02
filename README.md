@@ -1,3 +1,5 @@
+For Swell's private ECR image delivery and one-time Pulumi adoption, see [the release runbook](infra/README.md).
+
 <div align="center">
 
 <img src="assets/postgres-mcp-pro.png" alt="Postgres MCP Pro Logo" width="600"/>
@@ -531,12 +533,90 @@ Postgres MCP Pro Tools:
 | `list_objects` | Lists database objects (tables, views, sequences, extensions) within a specified schema. |
 | `get_object_details` | Provides information about a specific database object, for example, a table's columns, constraints, and indexes. |
 | `execute_sql` | Executes SQL statements on the database, with read-only limitations when connected in restricted mode. |
-| `explain_query` | Gets the execution plan for a SQL query describing how PostgreSQL will process it and exposing the query planner's cost model. Can be invoked with hypothetical indexes to simulate the behavior after adding indexes. |
+| `explain_query` | Gets the execution plan for a SQL query. Supports hypothetical indexes for estimates, or `analyze: true` for actual execution statistics in a bounded read-only transaction, including restricted mode. |
 | `get_top_queries` | Reports the slowest SQL queries based on total execution time using `pg_stat_statements` data. |
 | `analyze_workload_indexes` | Analyzes the database workload to identify resource-intensive queries, then recommends optimal indexes for them. |
 | `analyze_query_indexes` | Analyzes a list of specific SQL queries (up to 10) and recommends optimal indexes for them. |
 | `analyze_db_health` | Performs comprehensive health checks including: buffer cache hit rates, connection health, constraint validation, index health (duplicate/unused/invalid), sequence limits, and vacuum health. |
 
+
+### EXPLAIN ANALYZE for performance investigation
+
+Use the existing `explain_query` tool with `analyze: true`. **ANALYZE executes the
+query and can create database load**, even though its transaction is read-only.
+Start with harmless queries and use narrowly scoped lookups for performance work.
+No indexes are created by this operation.
+
+Example MCP `tools/call` parameters:
+
+```json
+{
+  "name": "explain_query",
+  "arguments": {
+    "sql": "WITH sample AS (SELECT 1 AS n) SELECT n FROM sample",
+    "analyze": true,
+    "timeout_ms": 5000,
+    "buffers": true,
+    "verbose": true,
+    "settings": true,
+    "timing": true,
+    "summary": true
+  }
+}
+```
+
+| Input | Type | Default / bounds |
+|-------|------|------------------|
+| `sql` | string | Required; ANALYZE accepts exactly one read-only SELECT, including CTEs |
+| `analyze` | boolean | `false`; set `true` for execution evidence |
+| `hypothetical_indexes` | array of index objects, or null | `[]`; cannot combine with ANALYZE |
+| `timeout_ms` | integer | `30000`; minimum `1`, maximum `60000` |
+| `buffers` | boolean | `true` |
+| `verbose` | boolean | `false` |
+| `settings` | boolean | `false` |
+| `timing` | boolean | `true`; disable to reduce per-node timing overhead |
+| `summary` | boolean | `true` |
+
+The six new options (`timeout_ms`, `buffers`, `verbose`, `settings`, `timing`,
+`summary`) apply when `analyze` is true. With defaults, execution uses
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with timing and summary enabled.
+The complete PostgreSQL plan object is returned as MCP `structuredContent` and
+JSON text, preserving actual row counts, timing and buffer fields. Plain EXPLAIN
+keeps its existing text output and hypothetical-index behavior.
+
+Restricted mode additionally caps `timeout_ms` at the server's configured
+`--restricted-query-timeout-seconds` (or its environment equivalent). The database
+statement timeout covers execution and lock waits; it is not an end-to-end MCP
+request deadline. Every ANALYZE call uses the existing connection pool and
+database permissions, enforces a read-only transaction even in unrestricted mode,
+and rolls back on success, failure or cancellation. Settings are transaction-local.
+Writes, data-modifying CTEs, SELECT INTO, locking SELECTs, multiple statements,
+transaction commands and settings overrides such as `set_config` are rejected.
+The existing safe-function allowlist also applies. Supply actual parameter values;
+ANALYZE does not substitute samples for unbound `$1` parameters.
+
+In restricted mode, raw `EXPLAIN ANALYZE` through `execute_sql` remains rejected;
+use `explain_query` so validation and timeout enforcement cannot be bypassed.
+
+### Other existing read-only tuning tools
+
+These upstream tools are already registered in this fork and use its restricted
+driver when the server runs with `--access-mode=restricted`:
+
+| Tool | Use | Prerequisites / scope |
+|------|-----|-----------------------|
+| `get_top_queries` | Rank historical queries by `mean_time`, `total_time` or `resources` | Requires an already installed and collecting `pg_stat_statements` extension and permission to read its statistics |
+| `analyze_db_health` | Inspect indexes, buffer hit rates, connections and other database-health metrics | For focused tuning, use `health_type: "index,buffer"`; reads database-wide catalog/statistics data |
+| `explain_query` with `hypothetical_indexes` | Estimate a query's plan with simulated indexes | Requires already installed HypoPG; uses session-local simulations, creates no physical indexes, and cannot combine with `analyze: true` |
+| `analyze_query_indexes` / `analyze_workload_indexes` | Recommend indexes for supplied queries or an observed workload | Require HypoPG and existing table statistics; workload discovery also uses `pg_stat_statements`. These can perform many planning/catalog queries |
+
+These tools report recommendations or diagnostics; they do not create production
+indexes. Missing extensions or statistics require a separate administrator
+operation. Keep extension installation and maintenance `ANALYZE`/`VACUUM` outside
+this read-only investigation. The advisors default to `method: "dta"`;
+`method: "llm"` additionally sends query/schema details to an external LLM service.
+For a specific lookup, begin with `explain_query` rather than a database-wide
+workload analysis. Read-only does not imply low database load.
 
 ## Related Projects
 

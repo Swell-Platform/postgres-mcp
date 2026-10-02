@@ -173,6 +173,7 @@ def load_redaction_config(args: Any, environ: dict[str, str] | None = None) -> R
             env.get("POSTGRES_MCP_REDACTION_DETECTOR"),
             "none",
         )
+        or "none"
     )
     fallback_mode = normalize_identifier(
         first_non_empty(
@@ -180,6 +181,7 @@ def load_redaction_config(args: Any, environ: dict[str, str] | None = None) -> R
             env.get("POSTGRES_MCP_REDACTION_FALLBACK_MODE"),
             "best_effort",
         )
+        or "best_effort"
     )
 
     inline_config = {

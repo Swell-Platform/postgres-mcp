@@ -80,6 +80,7 @@ from psycopg.sql import Composable
 from psycopg.sql import Literal
 from typing_extensions import LiteralString
 
+from .sql_driver import DEFAULT_EXPLAIN_ANALYZE_TIMEOUT_MS
 from .sql_driver import SqlDriver
 
 logger = logging.getLogger(__name__)
@@ -976,6 +977,35 @@ class SafeSqlDriver(SqlDriver):
 
         except pglast.parser.ParseError as e:
             raise ValueError("Failed to parse SQL statement") from e
+
+    async def explain_analyze_query(
+        self,
+        query: str,
+        *,
+        timeout_ms: int = DEFAULT_EXPLAIN_ANALYZE_TIMEOUT_MS,
+        buffers: bool = True,
+        verbose: bool = False,
+        settings: bool = False,
+        timing: bool = True,
+        summary: bool = True,
+    ) -> list[SqlDriver.RowResult]:
+        """Analyze exactly one SELECT using the existing function/node permission policy.
+
+        Validate the SELECT before adding trusted EXPLAIN options. General execute_query
+        continues rejecting EXPLAIN ANALYZE, so it cannot bypass this timeout/transaction path.
+        """
+        try:
+            parsed = pglast.parse_sql(query)
+        except pglast.parser.ParseError as e:
+            raise ValueError("Failed to parse SQL statement") from e
+        if len(parsed) != 1 or not isinstance(parsed[0].stmt, SelectStmt):
+            raise ValueError("EXPLAIN ANALYZE requires exactly one read-only SELECT query")
+        self._validate_node(parsed[0].stmt)
+        options = {"BUFFERS": buffers, "VERBOSE": verbose, "SETTINGS": settings, "TIMING": timing, "SUMMARY": summary}
+        if any(type(value) is not bool for value in options.values()):
+            raise ValueError("EXPLAIN options must be booleans")
+        explain_options = ", ".join(f"{name} {'TRUE' if enabled else 'FALSE'}" for name, enabled in options.items())
+        return await self.sql_driver.execute_readonly_explain(f"EXPLAIN (ANALYZE, {explain_options}, FORMAT JSON) {query}", timeout_ms=timeout_ms)
 
     async def execute_query(
         self,

@@ -79,7 +79,8 @@ class ResultProvenanceResolver:
 
     def _collect_from_item(self, from_item: Any, tables: list[TableRef]) -> None:
         if isinstance(from_item, RangeVar):
-            alias = from_item.alias.aliasname if getattr(from_item, "alias", None) else None
+            table_alias = from_item.alias
+            alias = table_alias.aliasname if table_alias is not None else None
             tables.append(
                 TableRef(
                     schema=normalize_optional_identifier(getattr(from_item, "schemaname", None)),

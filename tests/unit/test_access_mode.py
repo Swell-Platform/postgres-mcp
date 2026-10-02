@@ -218,7 +218,7 @@ async def test_main_fails_fast_on_invalid_restricted_timeout():
             "--restricted-query-timeout-seconds=0",
         ]
 
-        with pytest.raises(ValueError, match="Restricted query timeout must be greater than 0"):
+        with pytest.raises(ValueError, match="Restricted query timeout must be a finite number greater than 0"):
             await main()
     finally:
         sys.argv = original_argv

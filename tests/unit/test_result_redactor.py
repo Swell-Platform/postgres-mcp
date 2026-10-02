@@ -119,11 +119,7 @@ async def test_redacts_schema_qualified_policy_for_unqualified_star_query():
     )
     redactor = ResultRedactor(driver, policy)
 
-    rows = [
-        SqlDriver.RowResult(
-            cells={"id": 1, "email": "alice@example.com", "phone_number": "303-555-0101"}
-        )
-    ]
+    rows = [SqlDriver.RowResult(cells={"id": 1, "email": "alice@example.com", "phone_number": "303-555-0101"})]
     result = await redactor.redact_rows("SELECT * FROM contacts", rows)
 
     assert result[0].cells == {"id": 1, "email": "[REDACTED]", "phone_number": "***-***-0101"}
@@ -465,9 +461,9 @@ def test_presidio_detector_uses_analyzer_results(monkeypatch):
             assert language == "en"
             return ["match"] if "alice@example.com" in text else []
 
-    fake_module.AnalyzerEngine = FakeAnalyzerEngine
-    fake_nlp_module.NlpEngineProvider = FakeNlpEngineProvider
-    fake_registry_module.RecognizerRegistry = FakeRecognizerRegistry
+    monkeypatch.setattr(fake_module, "AnalyzerEngine", FakeAnalyzerEngine, raising=False)
+    monkeypatch.setattr(fake_nlp_module, "NlpEngineProvider", FakeNlpEngineProvider, raising=False)
+    monkeypatch.setattr(fake_registry_module, "RecognizerRegistry", FakeRecognizerRegistry, raising=False)
     monkeypatch.setitem(sys.modules, "presidio_analyzer", fake_module)
     monkeypatch.setitem(sys.modules, "presidio_analyzer.nlp_engine", fake_nlp_module)
     monkeypatch.setitem(sys.modules, "presidio_analyzer.recognizer_registry", fake_registry_module)

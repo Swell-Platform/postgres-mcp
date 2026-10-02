@@ -10,11 +10,15 @@ from typing import Optional
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from typing_extensions import LiteralString
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_EXPLAIN_ANALYZE_TIMEOUT_MS = 30_000
+MAX_EXPLAIN_ANALYZE_TIMEOUT_MS = 60_000
 
 
 def obfuscate_password(text: str | None) -> str | None:
@@ -220,6 +224,37 @@ class SqlDriver:
                 self.conn = None
 
             raise e
+
+    async def execute_readonly_explain(self, query: str, *, timeout_ms: int) -> list[RowResult]:
+        """Execute a validated EXPLAIN in its own read-only, always-rolled-back transaction.
+
+        Used by SafeSqlDriver after SELECT validation; callers must not pass arbitrary SQL.
+        The database timeout cancels execution, including lock waits, before pool reuse.
+        """
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= MAX_EXPLAIN_ANALYZE_TIMEOUT_MS:
+            raise ValueError(f"timeout_ms must be an integer between 1 and {MAX_EXPLAIN_ANALYZE_TIMEOUT_MS}")
+        if self.conn is None:
+            self.connect()
+        if self.conn is None:
+            raise ValueError("Connection not established")
+
+        if self.is_pool:
+            pool = await self.conn.pool_connect()
+            async with pool.connection() as connection:
+                return await self._execute_readonly_explain_with_connection(connection, query, timeout_ms)
+        return await self._execute_readonly_explain_with_connection(self.conn, query, timeout_ms)
+
+    async def _execute_readonly_explain_with_connection(self, connection, query: str, timeout_ms: int) -> list[RowResult]:
+        # A nested transaction would only create a savepoint, leaving settings on the caller's transaction.
+        if connection.info.transaction_status != TransactionStatus.IDLE:
+            raise ValueError("EXPLAIN ANALYZE requires an idle connection")
+        async with connection.transaction(force_rollback=True):
+            async with connection.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute("SET TRANSACTION READ ONLY")
+                await cursor.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
+                await cursor.execute(query)
+                rows = await cursor.fetchall()
+                return [SqlDriver.RowResult(cells=dict(row)) for row in rows]
 
     async def _execute_with_connection(self, connection, query, params, force_readonly) -> Optional[List[RowResult]]:
         """Execute query with the given connection."""
