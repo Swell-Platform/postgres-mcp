@@ -16,6 +16,7 @@ from mcp import StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 from psycopg.pq import TransactionStatus
+from psycopg_pool import AsyncConnectionPool
 
 from postgres_mcp import server
 from postgres_mcp.sql import DbConnPool
@@ -117,9 +118,10 @@ async def test_failure_cleanup(analyze_connection):
 async def test_statement_timeout_and_pool_reuse(analyze_database_url):
     db_pool = DbConnPool(analyze_database_url)
     try:
-        pool = await db_pool.pool_connect()
-        # Keep the same physical connection, proving cleanup rather than opening a replacement.
-        await pool.resize(min_size=1, max_size=1)
+        # Limit the real pool before opening it: pool_connect's health check can
+        # trigger growth, and resizing afterward doesn't immediately close extras.
+        with patch("postgres_mcp.sql.sql_driver.AsyncConnectionPool", new=lambda **kwargs: AsyncConnectionPool(**{**kwargs, "max_size": 1})):
+            pool = await db_pool.pool_connect()
         async with pool.connection() as conn:
             backend_pid = conn.info.backend_pid
         driver = SafeSqlDriver(SqlDriver(conn=db_pool))
