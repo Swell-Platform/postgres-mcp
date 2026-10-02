@@ -1,0 +1,6 @@
+config:
+  aws:region: us-west-2
+  aws:allowedAccountIds:
+    - "922751599449"
+secretsprovider: awskms:///arn:aws:kms:us-west-2:195969062870:key/db6a398f-c0e3-4180-86c5-227ef790beb0?region=us-west-2
+encryptedkey: AQICAHjkVGG1RYvy4iBbs4Uoh7cKKMTvt+NKiUd3hOxC7baRbQHtuV5laiUMniGDGWeVNaB2AAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMoTb3AlWwzdpz1HYtAgEQgDuAbd76/QA7CN60+LgLHgygkSxLvrh70pCSw2f5avE3rXJFyyqo7ZcebQQDtO4ds5vg/lT6Iq+bhN/NVg==

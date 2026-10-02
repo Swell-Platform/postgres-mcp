@@ -22,7 +22,7 @@ ADD . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
   uv sync --frozen --no-dev
 RUN if [ "$INSTALL_PRESIDIO" = "true" ]; then \
-      uv pip install --python /app/.venv/bin/python presidio-analyzer && \
+      uv sync --frozen --no-dev --extra presidio && \
       /app/.venv/bin/python -m spacy download en_core_web_lg; \
     fi
 
@@ -41,8 +41,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 ARG INSTALL_PRESIDIO=false
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
 LABEL org.opencontainers.image.description="Postgres MCP Agent - Multi-architecture container (${TARGETPLATFORM})"
-LABEL org.opencontainers.image.source="https://github.com/crystaldba/postgres-mcp"
+LABEL org.opencontainers.image.source="https://github.com/Swell-Platform/postgres-mcp"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.vendor="Crystal DBA"
 LABEL org.opencontainers.image.url="https://www.crystaldba.ai"
@@ -59,6 +61,11 @@ COPY docker-entrypoint.sh /app/
 RUN chmod +x /app/docker-entrypoint.sh
 
 USER app
+
+# Verify the release's redaction dependencies and model as the runtime user.
+RUN if [ "$INSTALL_PRESIDIO" = "true" ]; then \
+      python -c 'from postgres_mcp.result_redactor import PresidioDetector; assert PresidioDetector().should_redact("release-smoke@example.com")'; \
+    fi
 
 # Expose the SSE port
 EXPOSE 8000

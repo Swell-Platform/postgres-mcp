@@ -5,8 +5,12 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from mcp.types import CallToolResult
+from mcp.types import TextContent
 
 from postgres_mcp.server import explain_query
+from postgres_mcp.sql import SafeSqlDriver
+from postgres_mcp.sql import SqlDriver
 
 
 @pytest_asyncio.fixture
@@ -56,23 +60,17 @@ async def test_explain_query_integration():
 @pytest.mark.asyncio
 async def test_explain_query_with_analyze_integration():
     """Test the explain_query tool with analyze=True."""
-    # Mock response with format_text_response
-    result_text = json.dumps({"Plan": {"Node Type": "Seq Scan"}, "Execution Time": 1.23})
-    mock_text_result = MagicMock()
-    mock_text_result.text = result_text
-
-    # Patch the format_text_response function
-    with patch("postgres_mcp.server.format_text_response", return_value=[mock_text_result]):
-        # Patch the get_sql_driver
-        with patch("postgres_mcp.server.get_sql_driver"):
-            # Patch the ExplainPlanTool
-            with patch("postgres_mcp.server.ExplainPlanTool"):
-                result = await explain_query("SELECT * FROM users", analyze=True, hypothetical_indexes=None)
-
-                # Verify result matches our expected plan data
-                assert isinstance(result, list)
-                assert len(result) == 1
-                assert result[0].text == result_text
+    plan = {"Plan": {"Node Type": "Seq Scan", "Actual Rows": 1}, "Execution Time": 1.23}
+    base = MagicMock(spec=SqlDriver)
+    base.execute_readonly_explain = AsyncMock(return_value=[SqlDriver.RowResult(cells={"QUERY PLAN": [plan]})])
+    with patch("postgres_mcp.server.get_sql_driver", return_value=SafeSqlDriver(base)):
+        result = await explain_query("SELECT * FROM users", analyze=True, hypothetical_indexes=None)
+    assert isinstance(result, CallToolResult)
+    assert not result.isError
+    assert result.structuredContent == plan
+    assert isinstance(result.content[0], TextContent)
+    assert json.loads(result.content[0].text) == plan
+    base.execute_readonly_explain.assert_awaited_once()
 
 
 @pytest.mark.asyncio

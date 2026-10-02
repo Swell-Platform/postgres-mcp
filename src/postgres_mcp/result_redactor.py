@@ -4,8 +4,8 @@ import importlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Literal
 from typing import Any
+from typing import Literal
 from typing import Protocol
 
 from .redaction_policy import RedactionPolicy
@@ -38,11 +38,7 @@ class PatternDetector:
     def should_redact(self, value: Any) -> bool:
         if not isinstance(value, str):
             return False
-        return bool(
-            self.PHONE_PATTERN.search(value)
-            or self.EMAIL_PATTERN.search(value)
-            or self.SSN_PATTERN.search(value)
-        )
+        return bool(self.PHONE_PATTERN.search(value) or self.EMAIL_PATTERN.search(value) or self.SSN_PATTERN.search(value))
 
 
 class PresidioDetector:
@@ -80,9 +76,7 @@ class PresidioDetector:
                 supported_languages=["en"],
             )
         except ImportError as exc:
-            raise ValueError(
-                "Presidio redaction detector requires the optional 'presidio-analyzer' package and its NLP dependencies"
-            ) from exc
+            raise ValueError("Presidio redaction detector requires the optional 'presidio-analyzer' package and its NLP dependencies") from exc
         except Exception as exc:
             raise ValueError(
                 "Presidio redaction detector could not be initialized. Ensure Presidio and its NLP model dependencies are installed"

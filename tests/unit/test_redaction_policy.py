@@ -65,9 +65,7 @@ detector: none
     )
 
     assert [(entry.schema, entry.table) for entry in config.policy.protected_tables] == [("public", "patients")]
-    assert [(entry.schema, entry.table, entry.column) for entry in config.policy.protected_columns] == [
-        ("public", "encounters", "patient_name")
-    ]
+    assert [(entry.schema, entry.table, entry.column) for entry in config.policy.protected_columns] == [("public", "encounters", "patient_name")]
     assert config.policy.detector == "none"
 
 

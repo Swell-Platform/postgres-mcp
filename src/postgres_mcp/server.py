@@ -1,6 +1,7 @@
 # ruff: noqa: B008
 import argparse
 import asyncio
+import json
 import logging
 import math
 import os
@@ -37,6 +38,8 @@ from .sql import SafeSqlDriver
 from .sql import SqlDriver
 from .sql import check_hypopg_installation_status
 from .sql import obfuscate_password
+from .sql.sql_driver import DEFAULT_EXPLAIN_ANALYZE_TIMEOUT_MS
+from .sql.sql_driver import MAX_EXPLAIN_ANALYZE_TIMEOUT_MS
 from .top_queries import TopQueriesCalc
 
 # Initialize FastMCP with default settings
@@ -340,20 +343,26 @@ async def get_object_details(
 
 
 @mcp.tool(
-    description="Explains the execution plan for a SQL query, showing how the database will execute it and provides detailed cost estimates.",
+    description=(
+        "Explains a SQL query, with optional hypothetical indexes. With analyze=True, actually executes one read-only SELECT "
+        "(including CTEs) and returns the JSON execution plan. ANALYZE can create database load; it always uses a read-only "
+        "transaction and a bounded statement timeout."
+    ),
+    structured_output=False,
     annotations=ToolAnnotations(
         title="Explain Query",
         readOnlyHint=True,
     ),
 )
+@validate_call
 async def explain_query(
     sql: str = Field(description="SQL query to explain"),
     analyze: bool = Field(
         description="When True, actually runs the query to show real execution statistics instead of estimates. "
-        "Takes longer but provides more accurate information.",
+        "Can create database load. Requires one read-only SELECT with actual values, not unbound parameters.",
         default=False,
     ),
-    hypothetical_indexes: list[dict[str, Any]] = Field(
+    hypothetical_indexes: list[dict[str, Any]] | None = Field(
         description="""A list of hypothetical indexes to simulate. Each index must be a dictionary with these keys:
     - 'table': The table name to add the index to (e.g., 'users')
     - 'columns': List of column names to include in the index (e.g., ['email'] or ['last_name', 'first_name'])
@@ -366,7 +375,19 @@ Examples: [
 If there is no hypothetical index, you can pass an empty list.""",
         default=[],
     ),
-) -> ResponseType:
+    timeout_ms: int = Field(
+        default=DEFAULT_EXPLAIN_ANALYZE_TIMEOUT_MS,
+        ge=1,
+        le=MAX_EXPLAIN_ANALYZE_TIMEOUT_MS,
+        strict=True,
+        description="ANALYZE statement timeout in milliseconds; restricted mode also caps this at its configured query timeout.",
+    ),
+    buffers: bool = Field(default=True, strict=True, description="ANALYZE: include buffer usage statistics."),
+    verbose: bool = Field(default=False, strict=True, description="ANALYZE: include additional plan details and qualified names."),
+    settings: bool = Field(default=False, strict=True, description="ANALYZE: include planner settings differing from built-in defaults."),
+    timing: bool = Field(default=True, strict=True, description="ANALYZE: include per-node timings; disable to reduce instrumentation overhead."),
+    summary: bool = Field(default=True, strict=True, description="ANALYZE: include summary statistics such as total execution time."),
+) -> ResponseType | types.CallToolResult:
     """
     Explains the execution plan for a SQL query.
 
@@ -377,13 +398,23 @@ If there is no hypothetical index, you can pass an empty list.""",
     """
     try:
         sql_driver = await get_sql_driver()
+        if analyze:
+            if hypothetical_indexes:
+                raise ValueError("Cannot use analyze and hypothetical indexes together")
+            if isinstance(sql_driver, SafeSqlDriver):
+                timeout_ms = min(timeout_ms, max(1, int(current_restricted_query_timeout_seconds * 1000)))
+            else:
+                sql_driver = SafeSqlDriver(sql_driver)
+            rows = await sql_driver.explain_analyze_query(
+                sql, timeout_ms=timeout_ms, buffers=buffers, verbose=verbose, settings=settings, timing=timing, summary=summary
+            )
+            plan = rows[0].cells["QUERY PLAN"][0]
+            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(plan))], structuredContent=plan)
         explain_tool = ExplainPlanTool(sql_driver=sql_driver)
         result: ExplainPlanArtifact | ErrorResult | None = None
 
         # If hypothetical indexes are specified, check for HypoPG extension
         if hypothetical_indexes and len(hypothetical_indexes) > 0:
-            if analyze:
-                return format_error_response("Cannot use analyze and hypothetical indexes together")
             try:
                 # Use the common utility function to check if hypopg is installed
                 (
@@ -397,12 +428,6 @@ If there is no hypothetical index, you can pass an empty list.""",
 
                 # HypoPG is installed, proceed with explaining with hypothetical indexes
                 result = await explain_tool.explain_with_hypothetical_indexes(sql, hypothetical_indexes)
-            except Exception:
-                raise  # Re-raise the original exception
-        elif analyze:
-            try:
-                # Use EXPLAIN ANALYZE
-                result = await explain_tool.explain_analyze(sql)
             except Exception:
                 raise  # Re-raise the original exception
         else:
@@ -421,6 +446,8 @@ If there is no hypothetical index, you can pass an empty list.""",
             return format_error_response(error_message)
     except Exception as e:
         logger.error(f"Error explaining query: {e}")
+        if analyze:
+            return types.CallToolResult(content=[types.TextContent(type="text", text=f"Error: {e}")], isError=True)
         return format_error_response(str(e))
 
 
@@ -450,11 +477,7 @@ async def execute_sql(
         if rows is None:
             return format_text_response("No results")
         if result_redactor is not None:
-            requested_reveals = (
-                set(reveal_columns)
-                if reveal_confirmation == "EXPLICIT_USER_REQUESTED_UNMASKED_DATA"
-                else set()
-            )
+            requested_reveals = set(reveal_columns) if reveal_confirmation == "EXPLICIT_USER_REQUESTED_UNMASKED_DATA" else set()
             rows = await result_redactor.redact_rows(sql, rows, reveal_columns=requested_reveals)
         return format_text_response(list([r.cells for r in rows]))
     except Exception as e:
@@ -635,7 +658,9 @@ async def main():
         "--restricted-query-timeout-seconds",
         type=float,
         default=None,
-        help="Timeout in seconds for restricted-mode SQL queries. Defaults to 30. Can also be set with POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS.",
+        help=(
+            "Timeout in seconds for restricted-mode SQL queries. Defaults to 30. Can also be set with POSTGRES_MCP_RESTRICTED_QUERY_TIMEOUT_SECONDS."
+        ),
     )
     parser.add_argument(
         "--redaction-policy-file",
