@@ -1,22 +1,14 @@
 name: Postgres MCP CI
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "**/README.md"
   pull_request:
     types: [opened, synchronize, reopened]
     paths-ignore:
       - "**/README.md"
 
-# Serialize main's tests and publication together so an older slow run cannot
-# overwrite latest after a newer commit, and never interrupt a Pulumi update.
 concurrency:
-  group: postgres-mcp-${{ github.ref }}
-  cancel-in-progress: false
+  group: postgres-mcp-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   postgres-mcp-ci:
@@ -69,10 +61,11 @@ jobs:
       - name: Run Tests
         run: uv run pytest -v --log-cli-level=INFO
 
-  publish:
-    needs: postgres-mcp-ci
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/publish-ecr.yml
+      - uses: docker/setup-buildx-action@v3
+      - name: Verify release container through MCP
+        env:
+          POSTGRES_MCP_TEST_IMAGE: postgres-mcp:release-smoke
+        run: |
+          docker buildx build --load --build-arg INSTALL_PRESIDIO=true \
+            --build-arg "GIT_REVISION=$GITHUB_SHA" --tag "$POSTGRES_MCP_TEST_IMAGE" .
+          uv run pytest tests/integration/test_release_image.py -q

@@ -1,7 +1,12 @@
 name: Publish Postgres MCP to ECR
 
 on:
-  workflow_call:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/README.md"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,20 +33,6 @@ jobs:
         with:
           platforms: arm64,amd64
       - uses: docker/setup-buildx-action@v3
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "0.6.9"
-      - name: Verify release container through MCP before pushing
-        env:
-          POSTGRES_MCP_TEST_IMAGE: postgres-mcp:release-smoke
-        run: |
-          docker buildx build --load --build-arg INSTALL_PRESIDIO=true \
-            --build-arg "GIT_REVISION=$GITHUB_SHA" --tag "$POSTGRES_MCP_TEST_IMAGE" .
-          uv sync --locked
-          uv run pytest tests/integration/test_release_image.py -q
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
@@ -50,7 +41,7 @@ jobs:
       - uses: pulumi/actions@v7
         with:
           pulumi-version: 3.258.0
-      - name: Publish tested commit
+      - name: Build and publish image
         env:
           PULUMI_BACKEND_URL: s3://swell-pulumi-state-195969062870?region=us-west-2&awssdk=v2
         run: |

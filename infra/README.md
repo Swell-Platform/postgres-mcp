@@ -78,13 +78,16 @@ build or push. Actual updates require an explicit full commit SHA, supplied by
 CI as `postgres-mcp-image:revision`. A preview on an uncommitted checkout is a
 resource plan, not evidence that those changes have been built or released.
 
-After bootstrap and merge, `.github/workflows/build.yml` runs lint, Python and
-Pulumi type checks, and tests. Successful `main` pushes call `publish-ecr.yml`.
-The CI workflow can also be dispatched on `main` to retry a failed publication.
+`.github/workflows/build.yml` runs lint, Python and Pulumi type checks, and tests
+only on pull requests. After merge, `publish-ecr.yml` independently builds and
+publishes on `main` pushes, without rerunning pytest or the container MCP test.
+The publication workflow can also be dispatched on `main` to retry a failed run.
+Require the PR's `postgres-mcp-ci` check in branch protection to gate merging;
+direct pushes to main also trigger publication without a PR test run.
 PRs and other branches cannot assume the publisher role or publish images.
 No Docker Hub credentials, long-lived AWS keys, or Pulumi Cloud token are used.
 
-Before pushing, CI builds a native-platform container and exercises it via MCP
+During PR validation, CI builds a native-platform container and exercises it via MCP
 against an isolated disposable PostgreSQL instance: tool registration, ANALYZE,
 read-only execution, mutation rejection, and Presidio redaction. No database
 credentials or customer data are used.
