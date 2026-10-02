@@ -33,7 +33,7 @@ new aws.iam.RolePolicy("postgres-mcp-image-publisher", {
     Statement: [
       { Effect: "Allow", Action: "ecr:GetAuthorizationToken", Resource: "*" },
       { Effect: "Allow", Action: [
-        "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:BatchGetImage",
+        "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListTagsForResource", "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability",
         "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
       ], Resource: arn },
