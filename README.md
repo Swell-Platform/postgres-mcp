@@ -283,11 +283,15 @@ Decision precedence:
 - `column_rules[].masking_style: full` wins first
 - then `protected_tables` and `protected_columns` apply full redaction
 - then `column_rules[].masking_style: partial` applies partial masking
-- if provenance is unresolved, detector fallback may still fully redact the value
+- unresolved provenance is fully redacted when the policy contains field/table protections; detector-only policies use detector fallback
 
 Masking styles supported in `column_rules`:
 - `full`: replace the value with the configured redaction placeholder and never reveal it
-- `partial`: return a masked version of the value by default and allow explicit reveal for that result column
+- `partial`: mask direct source columns (including aliases and star projections) and allow explicit reveal for those result columns; casts and computed expressions are fully redacted
+
+Casts, combined expressions, and nested/whole-row projections containing a protected source receive full redaction. Duplicate output aliases and CTEs have unresolved provenance and fail closed under field/table policies. CTE lineage is not resolved precisely, so non-sensitive CTE outputs can also be redacted. Detector fallback checks nested dictionaries and arrays.
+
+Diagnostic tools strip SQL literals from plans, query history, and index definitions before rendering; costs, timings, counts, and relation names remain available. Protected column defaults and database error details are withheld. This does not establish lineage through arbitrary database views or functions.
 
 Current partial masking behavior:
 - emails reveal the first character of the local part and keep the full domain visible
@@ -298,7 +302,7 @@ Current partial masking behavior:
 
 Backward-compatibility rules:
 - `protected_tables` and `protected_columns` always use full redaction
-- existing `column_rules` that only use `skip_detector` keep their current behavior unless you add `masking_style`
+- `skip_detector` applies to detector-only fallback; it cannot bypass unresolved field/table protections
 - `column_rules[].force_redact: true` is treated as full redaction
 - detector-based fallback matches are fully redacted and are not revealable
 

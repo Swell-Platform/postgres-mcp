@@ -1,0 +1,68 @@
+{
+  "protected_columns": [
+    "public.users.password",
+    "public.users.remember_token",
+    "public.users.two_factor_reset_code",
+    "public.contacts.external_id",
+    "public.messages.content",
+    "public.messages.from_address",
+    "public.messages.from_name",
+    "public.messages.subject",
+    "public.reviews.body",
+    "public.reviews.external_id",
+    "public.reviews.reviewer_name",
+    "public.reviews.title",
+    "public.tickets.description",
+    "public.tickets.summary",
+    "public.ticket_activities.content",
+    "public.twilio_messages.from_phone",
+    "public.twilio_messages.text",
+    "public.twilio_messages.search",
+    "public.twilio_messages.to_phone",
+    "public.users.billing_address",
+    "public.users.billing_city",
+    "public.users.billing_country",
+    "public.users.billing_state",
+    "public.users.billing_zip",
+    "public.users.email",
+    "public.users.external_id",
+    "public.users.phone",
+    "public.workflow_histories.content",
+    "public.workflow_histories.from_address",
+    "public.workflow_histories.from_name",
+    "public.workflow_histories.subject",
+    "public.reviews.review_reply",
+    "public.reviews.raw_data",
+    "public.users.billing_address_line_2"
+  ],
+  "column_rules": [
+    {
+      "column": "public.contacts.email",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.contacts.name",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.contacts.phone_number",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.contacts.birthdate",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.users.name",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.users.phone_number",
+      "masking_style": "partial"
+    },
+    {
+      "column": "public.users.federated_id_email",
+      "masking_style": "partial"
+    }
+  ]
+}

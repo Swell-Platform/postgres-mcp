@@ -25,6 +25,8 @@ from .artifacts import ErrorResult
 from .artifacts import ExplainPlanArtifact
 from .database_health import DatabaseHealthTool
 from .database_health import HealthType
+from .diagnostic_redaction import DiagnosticSqlDriver
+from .diagnostic_redaction import redact_diagnostics
 from .explain import ExplainPlanTool
 from .index.index_opt_base import MAX_NUM_INDEX_TUNING_QUERIES
 from .index.llm_opt import LLMOptimizerTool
@@ -70,9 +72,13 @@ result_redactor: ResultRedactor | None = None
 current_restricted_query_timeout_seconds = 30.0
 
 
-async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
+async def get_sql_driver(*, diagnostic: bool = True, sanitize_rows: bool = True) -> Union[SqlDriver, SafeSqlDriver]:
     """Get the appropriate SQL driver based on the current access mode."""
-    base_driver = SqlDriver(conn=db_connection)
+    base_driver = (
+        DiagnosticSqlDriver(conn=db_connection, sanitize_rows=sanitize_rows)
+        if diagnostic and current_redaction_config.policy.is_enabled()
+        else SqlDriver(conn=db_connection)
+    )
 
     if current_access_mode == AccessMode.RESTRICTED:
         logger.debug("Using SafeSqlDriver with restrictions (RESTRICTED mode)")
@@ -82,8 +88,10 @@ async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
         return base_driver
 
 
-def format_text_response(text: Any) -> ResponseType:
+def format_text_response(text: Any, *, diagnostic: bool = True) -> ResponseType:
     """Format a text response."""
+    if diagnostic and current_redaction_config.policy.is_enabled():
+        text = redact_diagnostics(text)
     return [types.TextContent(type="text", text=str(text))]
 
 
@@ -92,8 +100,16 @@ def format_error_response(error: str) -> ResponseType:
     return format_text_response(f"Error: {error}")
 
 
+def _error_detail(error: Exception) -> str:
+    if current_redaction_config.policy.is_enabled():
+        return f"{type(error).__name__}: database details withheld by redaction policy"
+    return str(error)
+
+
 def _is_column_protected(schema: str | None, table: str, column: str) -> bool:
-    return current_redaction_config.policy.is_column_protected(schema, table, column)
+    policy = current_redaction_config.policy
+    rule = policy.rule_for_column(schema, table, column)
+    return policy.is_column_protected(schema, table, column) or bool(rule and rule.masking_style)
 
 
 @mcp.tool(
@@ -124,8 +140,8 @@ async def list_schemas() -> ResponseType:
         schemas = [row.cells for row in rows] if rows else []
         return format_text_response(schemas)
     except Exception as e:
-        logger.error(f"Error listing schemas: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -198,8 +214,8 @@ async def list_objects(
 
         return format_text_response(objects)
     except Exception as e:
-        logger.error(f"Error listing objects: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -236,7 +252,11 @@ async def get_object_details(
                         "column": r.cells["column_name"],
                         "data_type": r.cells["data_type"],
                         "is_nullable": r.cells["is_nullable"],
-                        "default": r.cells["column_default"],
+                        "default": (
+                            current_redaction_config.policy.replacement_text
+                            if r.cells["column_default"] is not None and _is_column_protected(schema_name, object_name, r.cells["column_name"])
+                            else r.cells["column_default"]
+                        ),
                         "protected": _is_column_protected(schema_name, object_name, r.cells["column_name"]),
                     }
                     for r in col_rows
@@ -338,8 +358,8 @@ async def get_object_details(
 
         return format_text_response(result)
     except Exception as e:
-        logger.error(f"Error getting object details: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -442,13 +462,17 @@ If there is no hypothetical index, you can pass an empty list.""",
         else:
             error_message = "Error processing explain plan"
             if isinstance(result, ErrorResult):
-                error_message = result.to_text()
+                error_message = (
+                    "Explain plan unavailable; details withheld by redaction policy"
+                    if current_redaction_config.policy.is_enabled()
+                    else result.to_text()
+                )
             return format_error_response(error_message)
     except Exception as e:
-        logger.error(f"Error explaining query: {e}")
+        logger.error("Tool failed (%s)", type(e).__name__)
         if analyze:
-            return types.CallToolResult(content=[types.TextContent(type="text", text=f"Error: {e}")], isError=True)
-        return format_error_response(str(e))
+            return types.CallToolResult(content=[types.TextContent(type="text", text=f"Error: {_error_detail(e)}")], isError=True)
+        return format_error_response(_error_detail(e))
 
 
 # Query function declaration without the decorator - we'll add it dynamically based on access mode
@@ -472,17 +496,17 @@ async def execute_sql(
 ) -> ResponseType:
     """Executes a SQL query against the database."""
     try:
-        sql_driver = await get_sql_driver()
+        sql_driver = await get_sql_driver(diagnostic=False)
         rows = await sql_driver.execute_query(sql)  # type: ignore
         if rows is None:
             return format_text_response("No results")
         if result_redactor is not None:
             requested_reveals = set(reveal_columns) if reveal_confirmation == "EXPLICIT_USER_REQUESTED_UNMASKED_DATA" else set()
             rows = await result_redactor.redact_rows(sql, rows, reveal_columns=requested_reveals)
-        return format_text_response(list([r.cells for r in rows]))
+        return format_text_response(list([r.cells for r in rows]), diagnostic=False)
     except Exception as e:
-        logger.error(f"Error executing query: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -499,17 +523,17 @@ async def analyze_workload_indexes(
 ) -> ResponseType:
     """Analyze frequently executed queries in the database and recommend optimal indexes."""
     try:
-        sql_driver = await get_sql_driver()
+        sql_driver = await get_sql_driver(sanitize_rows=False)
         if method == "dta":
             index_tuning = DatabaseTuningAdvisor(sql_driver)
         else:
             index_tuning = LLMOptimizerTool(sql_driver)
-        dta_tool = TextPresentation(sql_driver, index_tuning)
+        dta_tool = TextPresentation(sql_driver, index_tuning, redact_output=current_redaction_config.policy.is_enabled())
         result = await dta_tool.analyze_workload(max_index_size_mb=max_index_size_mb)
         return format_text_response(result)
     except Exception as e:
-        logger.error(f"Error analyzing workload: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -532,17 +556,17 @@ async def analyze_query_indexes(
         return format_error_response(f"Please provide a list of up to {MAX_NUM_INDEX_TUNING_QUERIES} queries to analyze.")
 
     try:
-        sql_driver = await get_sql_driver()
+        sql_driver = await get_sql_driver(sanitize_rows=False)
         if method == "dta":
             index_tuning = DatabaseTuningAdvisor(sql_driver)
         else:
             index_tuning = LLMOptimizerTool(sql_driver)
-        dta_tool = TextPresentation(sql_driver, index_tuning)
+        dta_tool = TextPresentation(sql_driver, index_tuning, redact_output=current_redaction_config.policy.is_enabled())
         result = await dta_tool.analyze_queries(queries=queries, max_index_size_mb=max_index_size_mb)
         return format_text_response(result)
     except Exception as e:
-        logger.error(f"Error analyzing queries: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 @mcp.tool(
@@ -608,8 +632,8 @@ async def get_top_queries(
             return format_error_response("Invalid sort criteria. Please use 'resources' or 'mean_time' or 'total_time'.")
         return format_text_response(result)
     except Exception as e:
-        logger.error(f"Error getting slow queries: {e}")
-        return format_error_response(str(e))
+        logger.error("Tool failed (%s)", type(e).__name__)
+        return format_error_response(_error_detail(e))
 
 
 async def main():
@@ -815,7 +839,7 @@ async def shutdown(sig=None):
         await db_connection.close()
         logger.info("Closed database connections")
     except Exception as e:
-        logger.error(f"Error closing database connections: {e}")
+        logger.error("Tool failed (%s)", type(e).__name__)
 
     # Exit with appropriate status code
     sys.exit(128 + sig if sig is not None else 0)

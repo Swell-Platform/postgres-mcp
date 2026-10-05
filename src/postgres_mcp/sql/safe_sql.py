@@ -1026,13 +1026,13 @@ class SafeSqlDriver(SqlDriver):
                         force_readonly=True,
                     )
             except asyncio.TimeoutError as e:
-                logger.warning(f"Query execution timed out after {self.timeout} seconds: {query[:100]}...")
+                logger.warning("Query execution timed out after %s seconds", self.timeout)
                 raise ValueError(
                     f"Query execution timed out after {self.timeout} seconds in restricted mode. "
                     "Consider simplifying your query or increasing the timeout."
                 ) from e
             except Exception as e:
-                logger.error(f"Error executing query: {e}")
+                logger.error("Query execution failed (%s)", type(e).__name__)
                 raise
         else:
             return await self.sql_driver.execute_query(
