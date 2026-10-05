@@ -596,3 +596,19 @@ async def test_partial_phone_keeps_supported_international_prefix_format(phone, 
     redactor = ResultRedactor(make_driver({("public", "contacts"): ["phone_number"]}), policy)
     result = await redactor.redact_rows("SELECT phone_number FROM public.contacts", [SqlDriver.RowResult({"phone_number": phone})])
     assert result[0].cells["phone_number"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("projection", ["c", "contacts"])
+@pytest.mark.parametrize("columns", [["email"], ["id", "email"]])
+@pytest.mark.parametrize("reveal", [False, True])
+async def test_partial_only_whole_row_is_fully_redacted(projection, columns, reveal):
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.contacts.email", "masking_style": "partial"}]})
+    redactor = ResultRedactor(make_driver({("public", "contacts"): columns}), policy)
+    alias = " c" if projection == "c" else ""
+    result = await redactor.redact_rows(
+        f"SELECT {projection} AS payload FROM public.contacts{alias}",
+        [SqlDriver.RowResult(cells={"payload": "(synthetic@example.test)" if len(columns) == 1 else "(7,synthetic@example.test)"})],
+        reveal_columns={"payload"} if reveal else set(),
+    )
+    assert result[0].cells["payload"] == "[REDACTED]"

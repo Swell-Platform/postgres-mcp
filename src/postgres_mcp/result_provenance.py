@@ -114,8 +114,13 @@ class ResultProvenanceResolver:
 
     async def _expand_target(self, target: ResTarget, scope: list[TableRef]) -> list[FieldProvenance]:
         value = getattr(target, "val", None)
+        is_direct_column = isinstance(value, ColumnRef)
         if isinstance(value, ColumnRef):
             fields = self._extract_fields(value)
+            # A bare relation reference is one composite output, even when the
+            # table has only one column. It must never be revealable as a field.
+            if len(fields) == 1 and self._resolve_table_reference(scope, fields[0]) is not None:
+                is_direct_column = False
             if len(fields) == 1 and fields[0] == "*":
                 return await self._expand_all_tables(scope)
             if len(fields) == 2 and fields[1] == "*":
@@ -129,7 +134,7 @@ class ResultProvenanceResolver:
             FieldProvenance(
                 sources=tuple(sorted(sources, key=lambda item: ((item.schema or ""), item.table, item.column))),
                 is_known=is_known,
-                is_direct_column=isinstance(value, ColumnRef),
+                is_direct_column=is_direct_column,
             )
         ]
 

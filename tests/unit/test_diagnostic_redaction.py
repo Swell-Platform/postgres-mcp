@@ -156,3 +156,11 @@ async def test_optimizer_inputs_remain_original_but_rendered_plans_are_masked():
         rows = await DiagnosticSqlDriver(conn=MagicMock(), sanitize_rows=False).execute_query("SELECT query FROM pg_stat_statements")
     assert rows is not None
     assert rows[0].cells["query"] == query
+
+
+@pytest.mark.parametrize("identifier", ["café", "患者", "😀"])
+def test_unicode_identifiers_before_literals_preserve_exact_redaction(identifier):
+    from postgres_mcp.diagnostic_redaction import redact_sql_literals
+
+    query = f"SELECT \"{identifier}\", 'synthetic secret', \"{identifier}\" = 'another secret'"
+    assert redact_sql_literals(query) == f"SELECT \"{identifier}\", '[REDACTED]', \"{identifier}\" = '[REDACTED]'"
