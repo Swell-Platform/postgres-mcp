@@ -92,3 +92,25 @@ async def test_get_object_details_marks_protected_columns():
         result = await server.get_object_details("public", "patients", "table")
 
     assert "'protected': True" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_object_details_marks_partial_fields_and_hides_only_protected_defaults():
+    async def query(driver, sql, params=None):
+        if "information_schema.columns" in sql:
+            return [
+                MagicMock(cells={"column_name": name, "data_type": "text", "is_nullable": "YES", "column_default": default})
+                for name, default in [("name", "'synthetic private name'"), ("id", "nextval('contacts_id_seq'::regclass)")]
+            ]
+        return []
+
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.contacts.name", "masking_style": "partial"}]})
+    with (
+        patch.object(server, "get_sql_driver", AsyncMock(return_value=MagicMock())),
+        patch.object(server, "current_redaction_config", RedactionConfig(policy=policy)),
+        patch("postgres_mcp.server.SafeSqlDriver.execute_param_query", side_effect=query),
+    ):
+        response = await server.get_object_details("public", "contacts", "table")
+    assert "synthetic private name" not in response[0].text
+    assert "'protected': True" in response[0].text
+    assert "contacts_id_seq" in response[0].text

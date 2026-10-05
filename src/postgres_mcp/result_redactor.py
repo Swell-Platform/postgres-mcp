@@ -143,8 +143,11 @@ class ResultRedactor:
         return redacted_rows
 
     def _decide_redaction(self, provenance: FieldProvenance | None, value: Any) -> RedactionDecision:
+        has_protections = bool(self.policy.protected_columns or self.policy.protected_tables) or any(
+            rule.masking_style for rule in self.policy.column_rules
+        )
         if provenance is None:
-            return self._detector_decision(value)
+            return RedactionDecision(style="full") if has_protections else self._detector_decision(value)
 
         matched_rules = [self.policy.rule_for_column(source.schema, source.table, source.column) for source in provenance.sources]
         rules = [rule for rule in matched_rules if rule is not None]
@@ -155,25 +158,37 @@ class ResultRedactor:
             return RedactionDecision(style="full")
 
         if any(rule.masking_style == "partial" for rule in rules):
+            # Partial formats are defined for a single source value. Combined or
+            # transformed values can retain other sensitive text around a phone.
+            if not provenance.is_direct_column:
+                return RedactionDecision(style="full")
             return RedactionDecision(style="partial", reveal_allowed=True)
 
         if provenance.is_known:
             return RedactionDecision(style="none")
 
-        if any(rule.skip_detector for rule in rules):
-            return RedactionDecision(style="none")
-
         if self.policy.fallback_mode == "best_effort":
-            if self.detector is None and self.policy.is_enabled():
+            if has_protections:
                 return RedactionDecision(style="full")
+            if any(rule.skip_detector for rule in rules):
+                return RedactionDecision(style="none")
             return self._detector_decision(value)
 
         return RedactionDecision(style="none")
 
     def _detector_decision(self, value: Any) -> RedactionDecision:
-        if self.detector is None:
+        detector = self.detector
+        if detector is None:
             return RedactionDecision(style="none")
-        return RedactionDecision(style="full" if self.detector.should_redact(value) else "none", used_detector=True)
+
+        def detected(item: Any) -> bool:
+            if isinstance(item, dict):
+                return any(detected(key) or detected(child) for key, child in item.items())
+            if isinstance(item, (list, tuple)):
+                return any(detected(child) for child in item)
+            return detector.should_redact(item)
+
+        return RedactionDecision(style="full" if detected(value) else "none", used_detector=True)
 
     def _mask_partial_value(self, value: Any) -> Any:
         if value is None:
@@ -192,7 +207,7 @@ class ResultRedactor:
             digits = [char for char in value if char.isdigit()]
             return self._mask_preserving_digits(value, visible_digits=set(range(len(digits) - 4, len(digits))))
 
-        if self.PHONE_PATTERN.search(value):
+        if self.PHONE_PATTERN.fullmatch(value.removeprefix("+")):
             digits = [char for char in value if char.isdigit()]
             return self._mask_preserving_digits(value, visible_digits=set(range(len(digits) - 4, len(digits))))
 

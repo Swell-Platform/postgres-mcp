@@ -301,7 +301,7 @@ class SqlDriver:
                 try:
                     await connection.rollback()
                 except Exception as rollback_error:
-                    logger.error(f"Error rolling back transaction: {rollback_error}")
+                    logger.error("Transaction rollback failed (%s)", type(rollback_error).__name__)
 
-            logger.error(f"Error executing query ({query}): {e}")
+            logger.error("Query execution failed (%s)", type(e).__name__)
             raise e

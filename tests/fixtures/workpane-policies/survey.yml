@@ -1,0 +1,12 @@
+{
+  "protected_columns": [
+    "public.survey_response.user_external_id",
+    "public.survey_response.invite_token"
+  ],
+  "column_rules": [
+    {
+      "column": "public.survey_response.user_name",
+      "masking_style": "partial"
+    }
+  ]
+}

@@ -29,6 +29,7 @@ class SourceColumn:
 class FieldProvenance:
     sources: tuple[SourceColumn, ...]
     is_known: bool
+    is_direct_column: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,8 +61,17 @@ class ResultProvenanceResolver:
             return {column: UNKNOWN_PROVENANCE for column in result_columns}
 
         stmt = parsed[0].stmt
+        # CTE names can shadow real tables. Until CTE lineage is resolved,
+        # they must never be treated as physical unprotected relations.
+        if getattr(stmt, "withClause", None) is not None:
+            return {column: UNKNOWN_PROVENANCE for column in result_columns}
         scope = self._collect_scope(stmt)
         target_provenance = await self._resolve_target_list(stmt, scope)
+
+        # dict_row collapses duplicate aliases; JOIN USING/NATURAL can also
+        # change star ordering. Never map sources positionally after a mismatch.
+        if len(target_provenance) != len(result_columns):
+            return {column: UNKNOWN_PROVENANCE for column in result_columns}
 
         results: dict[str, FieldProvenance] = {}
         for idx, column_name in enumerate(result_columns):
@@ -115,7 +125,13 @@ class ResultProvenanceResolver:
                 return await self._expand_table(table_ref)
 
         sources, is_known = await self._collect_expression_sources(value, scope)
-        return [FieldProvenance(sources=tuple(sorted(sources, key=lambda item: ((item.schema or ""), item.table, item.column))), is_known=is_known)]
+        return [
+            FieldProvenance(
+                sources=tuple(sorted(sources, key=lambda item: ((item.schema or ""), item.table, item.column))),
+                is_known=is_known,
+                is_direct_column=isinstance(value, ColumnRef),
+            )
+        ]
 
     async def _expand_all_tables(self, scope: list[TableRef]) -> list[FieldProvenance]:
         provenance: list[FieldProvenance] = []
@@ -130,6 +146,7 @@ class ResultProvenanceResolver:
             FieldProvenance(
                 sources=(SourceColumn(schema=source_schema, table=table_ref.table, column=column),),
                 is_known=True,
+                is_direct_column=True,
             )
             for column in columns
         ]
@@ -189,7 +206,10 @@ class ResultProvenanceResolver:
             return set(), False
 
         if "*" in fields:
-            return set(), False
+            table_ref = self._resolve_table_reference(scope, fields[0]) if len(fields) == 2 else None
+            if table_ref is None:
+                return set(), False
+            return {source for field in await self._expand_table(table_ref) for source in field.sources}, True
 
         if len(fields) == 3:
             schema_name, table_name, column_name = fields
@@ -217,6 +237,10 @@ class ResultProvenanceResolver:
         if len(fields) == 1:
             matches: list[SourceColumn] = []
             column_name = normalize_identifier(fields[0])
+            # A table alias by itself is a whole-row value (e.g. row_to_json(t)).
+            table_ref = self._resolve_table_reference(scope, column_name)
+            if table_ref is not None:
+                return {source for field in await self._expand_table(table_ref) for source in field.sources}, True
             for table_ref in scope:
                 if await self._table_has_column(table_ref.schema, table_ref.table, column_name):
                     matches.append(

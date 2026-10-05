@@ -10,6 +10,7 @@ import humanize
 
 from ..artifacts import ExplainPlanArtifact
 from ..artifacts import calculate_improvement_multiple
+from ..diagnostic_redaction import redact_diagnostics
 from ..sql import SqlDriver
 from .dta_calc import IndexTuningBase
 from .index_opt_base import IndexDefinition
@@ -21,13 +22,14 @@ logger = logging.getLogger(__name__)
 class TextPresentation:
     """Text-based presentation of index tuning recommendations."""
 
-    def __init__(self, sql_driver: SqlDriver, index_tuning: IndexTuningBase):
+    def __init__(self, sql_driver: SqlDriver, index_tuning: IndexTuningBase, *, redact_output: bool = False):
         """
         Initialize the presentation.
 
         Args:
             conn: The PostgreSQL connection object
         """
+        self.redact_output = redact_output
         self.sql_driver = sql_driver
         self.index_tuning = index_tuning
 
@@ -246,6 +248,11 @@ class TextPresentation:
                 if new_cost > 0 and base_cost > 0:
                     improvement_multiple = f"{calculate_improvement_multiple(base_cost, new_cost):.1f}"
 
+                # Optimizers need original expressions for cost/identity analysis;
+                # redact only the copies passed to presentation.
+                if self.redact_output:
+                    before_plan = redact_diagnostics(before_plan)
+                    after_plan = redact_diagnostics(after_plan)
                 before_plan_text = ExplainPlanArtifact.format_plan_summary(before_plan)
                 after_plan_text = ExplainPlanArtifact.format_plan_summary(after_plan)
                 diff_text = ExplainPlanArtifact.create_plan_diff(before_plan, after_plan)

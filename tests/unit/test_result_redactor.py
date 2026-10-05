@@ -138,7 +138,7 @@ async def test_redacts_protected_columns_inside_computed_expressions():
 
 
 @pytest.mark.asyncio
-async def test_masks_partial_columns_inside_computed_expressions():
+async def test_redacts_partial_columns_inside_computed_expressions():
     driver = make_driver({("public", "patients"): ["email"]})
     policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.patients.email", "masking_style": "partial"}]})
     redactor = ResultRedactor(driver, policy)
@@ -146,7 +146,7 @@ async def test_masks_partial_columns_inside_computed_expressions():
     rows = [SqlDriver.RowResult(cells={"lowered": "alice@example.com"})]
     result = await redactor.redact_rows("SELECT lower(p.email) AS lowered FROM public.patients p", rows)
 
-    assert result[0].cells["lowered"] == "a****@example.com"
+    assert result[0].cells["lowered"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio
@@ -483,3 +483,116 @@ def test_presidio_detector_uses_analyzer_results(monkeypatch):
     assert captured["analyzer_nlp_engine"] == "fake-nlp-engine"
     assert redactor.detector.should_redact("alice@example.com") is True
     assert redactor.detector.should_redact("safe value") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "projection, value",
+    [
+        ("search", "'synthetic':1 'sample':2"),
+        ("t.search AS masked", "'synthetic':1 'sample':2"),
+        ("t.search::text AS masked", "'synthetic':1 'sample':2"),
+        ("tsvector_to_array(t.search) AS masked", ["synthetic", "sample"]),
+        ("jsonb_build_object('terms', t.search) AS masked", {"terms": "synthetic"}),
+    ],
+)
+async def test_workpane_twilio_search_baseline(projection, value):
+    import json
+    from pathlib import Path
+
+    policy_path = Path(__file__).parents[1] / "fixtures/workpane-policies/main.yml"
+    policy = RedactionPolicy.from_dict(json.loads(policy_path.read_text()))
+    redactor = ResultRedactor(make_driver({("public", "twilio_messages"): ["id", "search"]}), policy)
+    name = "search" if projection == "search" else "masked"
+    result = await redactor.redact_rows(
+        f"SELECT {projection}, t.id FROM public.twilio_messages t",
+        [SqlDriver.RowResult(cells={name: value, "id": 7})],
+        reveal_columns={name},
+    )
+    assert result[0].cells == {name: "[REDACTED]", "id": 7}
+
+
+@pytest.mark.asyncio
+async def test_partial_combined_expression_cannot_leak_name_with_phone():
+    policy = RedactionPolicy.from_dict(
+        {
+            "column_rules": [
+                {"column": "public.contacts.name", "masking_style": "partial"},
+                {"column": "public.contacts.phone_number", "masking_style": "partial"},
+            ]
+        }
+    )
+    redactor = ResultRedactor(make_driver({("public", "contacts"): ["name", "phone_number"]}), policy)
+    result = await redactor.redact_rows(
+        "SELECT name || ' ' || phone_number AS combined FROM public.contacts",
+        [SqlDriver.RowResult(cells={"combined": "Synthetic Person 303-555-0101"})],
+    )
+    assert result[0].cells["combined"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_whole_row_json_keeps_protected_provenance_with_detector():
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.twilio_messages.text"], "detector": "simple"})
+    redactor = ResultRedactor(make_driver({("public", "twilio_messages"): ["id", "text"]}), policy)
+    result = await redactor.redact_rows(
+        "SELECT row_to_json(t) AS payload, t.id FROM public.twilio_messages t",
+        [SqlDriver.RowResult(cells={"payload": {"id": 7, "text": "synthetic private words"}, "id": 7})],
+    )
+    assert result[0].cells == {"payload": "[REDACTED]", "id": 7}
+
+
+@pytest.mark.asyncio
+async def test_detector_checks_nested_unknown_outputs():
+    policy = RedactionPolicy.from_dict({"detector": "simple"})
+    redactor = ResultRedactor(make_driver({}), policy)
+    result = await redactor.redact_rows(
+        "WITH c AS (SELECT 1) SELECT payload FROM c",
+        [SqlDriver.RowResult(cells={"payload": {"nested": ["synthetic@example.test"]}})],
+    )
+    assert result[0].cells["payload"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_partial_name_containing_phone_does_not_keep_full_words():
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.contacts.name", "masking_style": "partial"}]})
+    redactor = ResultRedactor(make_driver({("public", "contacts"): ["name"]}), policy)
+    result = await redactor.redact_rows("SELECT name FROM public.contacts", [SqlDriver.RowResult({"name": "Synthetic Person 303-555-0101"})])
+    assert "Synthetic" not in result[0].cells["name"]
+    assert "Person" not in result[0].cells["name"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_output_aliases_cannot_shift_sensitive_provenance():
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.twilio_messages.text"], "detector": "simple"})
+    redactor = ResultRedactor(make_driver({("public", "twilio_messages"): ["id", "text"]}), policy)
+    # psycopg dict_row keeps the last value when names collide.
+    result = await redactor.redact_rows(
+        "SELECT id AS same, text AS same FROM public.twilio_messages",
+        [SqlDriver.RowResult({"same": "synthetic private words"})],
+        reveal_columns={"same"},
+    )
+    assert result[0].cells["same"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH c AS (SELECT text AS value FROM public.twilio_messages) SELECT c.value FROM c",
+        "WITH twilio_messages AS (SELECT text AS id FROM public.twilio_messages) SELECT t.id FROM twilio_messages t",
+    ],
+)
+async def test_cte_aliases_cannot_claim_unprotected_base_table_provenance(sql):
+    policy = RedactionPolicy.from_dict({"protected_columns": ["public.twilio_messages.text"], "detector": "simple"})
+    redactor = ResultRedactor(make_driver({("public", "twilio_messages"): ["id", "text"]}), policy)
+    result = await redactor.redact_rows(sql, [SqlDriver.RowResult({"value": "synthetic private words"})])
+    assert result[0].cells["value"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phone,expected", [("+1-303-555-0101", "+*-***-***-0101"), ("303-555-0101", "***-***-0101")])
+async def test_partial_phone_keeps_supported_international_prefix_format(phone, expected):
+    policy = RedactionPolicy.from_dict({"column_rules": [{"column": "public.contacts.phone_number", "masking_style": "partial"}]})
+    redactor = ResultRedactor(make_driver({("public", "contacts"): ["phone_number"]}), policy)
+    result = await redactor.redact_rows("SELECT phone_number FROM public.contacts", [SqlDriver.RowResult({"phone_number": phone})])
+    assert result[0].cells["phone_number"] == expected
